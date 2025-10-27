@@ -820,7 +820,21 @@ function MapController({ position, zoom, bounds }: { position: [number, number] 
   useEffect(() => {
     if (bounds) {
       // If we have bounds, fit to them instead of using position/zoom
-      map.fitBounds(bounds, { padding: [50, 50], animate: true, duration: 1.5, maxZoom: 15 })
+      // Calculate the bounds size to determine appropriate zoom constraints
+      const [[south, west], [north, east]] = bounds
+      const latSpan = north - south
+      const lonSpan = east - west
+
+      // For very large areas (states, countries), set a minimum zoom to keep detail
+      const minZoom = (latSpan > 2 || lonSpan > 2) ? 7 : undefined
+
+      map.fitBounds(bounds, {
+        padding: [50, 50],
+        animate: true,
+        duration: 1.5,
+        maxZoom: 15,
+        ...(minZoom && { minZoom })
+      })
     } else if (position) {
       map.flyTo(position, zoom, { duration: 1.5 })
     }
