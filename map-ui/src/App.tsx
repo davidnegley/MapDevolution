@@ -239,7 +239,11 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       const east = bounds.getEast()
       const latExpand = (north - south) * 0.3
       const lonExpand = (east - west) * 0.3
-      const expandedBbox = `${south - latExpand},${west - lonExpand},${north + latExpand},${east + lonExpand}`
+
+      // Limit expanded bbox to max ~0.5 degrees (to avoid Overpass API rejecting query)
+      const maxExpandLat = Math.min(latExpand, 0.5)
+      const maxExpandLon = Math.min(lonExpand, 0.5)
+      const expandedBbox = `${south - maxExpandLat},${west - maxExpandLon},${north + maxExpandLat},${east + maxExpandLon}`
 
       // Skip if same bbox
       if (bbox === lastBboxRef.current) {
@@ -316,6 +320,13 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         // Handle gateway timeout - use cached data if available
         if (response.status === 504) {
           console.warn('Overpass API timeout. Using cached data if available.')
+          setIsLoading(false)
+          return
+        }
+
+        // Handle bad request (query too large) - use cached data if available
+        if (response.status === 400) {
+          console.warn('Overpass API rejected query (area too large). Using cached data if available.')
           setIsLoading(false)
           return
         }
