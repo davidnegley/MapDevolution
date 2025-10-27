@@ -240,8 +240,21 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       const latSpan = north - south
       const lonSpan = east - west
 
+      // Calculate zoom level from lat span (rough approximation)
+      // At equator: zoom ~= log2(360 / latSpan)
+      const approximateZoom = Math.log2(180 / latSpan)
+
       // Skip relation queries when zoomed out too far (bbox > 1 degree)
       const skipRelations = latSpan > 1 || lonSpan > 1
+
+      // Skip buildings when zoomed out beyond zoom 13
+      const skipBuildings = approximateZoom < 13
+
+      // Skip minor roads when zoomed out beyond zoom 11
+      const skipMinorRoads = approximateZoom < 11
+
+      // Skip all detail when zoomed way out (zoom < 9)
+      const skipAllDetail = approximateZoom < 9
 
       // Expand bbox slightly for relation queries (helps catch large areas)
       const latExpand = latSpan * 0.3
@@ -275,51 +288,52 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       setIsLoading(true)
 
       try {
-        const query = skipRelations ? `
-          [out:json][timeout:25];
-          (
-            way["highway"](${bbox});
-            way["building"](${bbox});
-            way["waterway"](${bbox});
-            way["natural"="water"](${bbox});
-            way["leisure"="park"](${bbox});
-            way["leisure"="nature_reserve"](${bbox});
-            way["boundary"="national_park"](${bbox});
-            way["boundary"="protected_area"](${bbox});
-            way["landuse"="forest"](${bbox});
-            way["landuse"="grass"](${bbox});
-            way["landuse"="meadow"](${bbox});
-            way["landuse"="wetland"](${bbox});
-            way["natural"="wood"](${bbox});
-            way["natural"="wetland"](${bbox});
-            way["natural"="marsh"](${bbox});
-            way["natural"="swamp"](${bbox});
-            node["name"](${bbox});
-          );
-          out geom;
-        ` : `
-          [out:json][timeout:25];
-          (
-            way["highway"](${bbox});
-            way["building"](${bbox});
-            way["waterway"](${bbox});
-            way["natural"="water"](${bbox});
-            way["leisure"="park"](${bbox});
-            way["leisure"="nature_reserve"](${bbox});
-            way["boundary"="national_park"](${bbox});
-            way["boundary"="protected_area"](${bbox});
-            way["landuse"="forest"](${bbox});
-            way["landuse"="grass"](${bbox});
-            way["landuse"="meadow"](${bbox});
-            way["landuse"="wetland"](${bbox});
-            way["natural"="wood"](${bbox});
-            way["natural"="wetland"](${bbox});
-            way["natural"="marsh"](${bbox});
-            way["natural"="swamp"](${bbox});
-            node["name"](${bbox});
-          );
-          out geom;
+        // Build query dynamically based on zoom level
+        const queryParts: string[] = []
 
+        // Major roads always included
+        if (!skipAllDetail) {
+          if (skipMinorRoads) {
+            // Only major roads
+            queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${bbox});`)
+          } else {
+            // All roads
+            queryParts.push(`way["highway"](${bbox});`)
+          }
+        }
+
+        // Buildings only at high zoom
+        if (!skipBuildings && !skipAllDetail) {
+          queryParts.push(`way["building"](${bbox});`)
+        }
+
+        // Water features
+        if (!skipAllDetail) {
+          queryParts.push(`way["waterway"](${bbox});`)
+          queryParts.push(`way["natural"="water"](${bbox});`)
+        }
+
+        // Parks and natural features - always show major ones
+        if (!skipAllDetail) {
+          queryParts.push(`way["leisure"="park"](${bbox});`)
+          queryParts.push(`way["leisure"="nature_reserve"](${bbox});`)
+          queryParts.push(`way["boundary"="national_park"](${bbox});`)
+          queryParts.push(`way["boundary"="protected_area"](${bbox});`)
+          queryParts.push(`way["landuse"="forest"](${bbox});`)
+          queryParts.push(`way["landuse"="grass"](${bbox});`)
+          queryParts.push(`way["landuse"="meadow"](${bbox});`)
+          queryParts.push(`way["landuse"="wetland"](${bbox});`)
+          queryParts.push(`way["natural"="wood"](${bbox});`)
+          queryParts.push(`way["natural"="wetland"](${bbox});`)
+          queryParts.push(`way["natural"="marsh"](${bbox});`)
+          queryParts.push(`way["natural"="swamp"](${bbox});`)
+          queryParts.push(`node["name"](${bbox});`)
+        }
+
+        const wayQuery = queryParts.length > 0 ? queryParts.join('\n            ') : ''
+
+        // Relation queries (for large protected areas)
+        const relationQuery = !skipRelations && !skipAllDetail ? `
           (
             rel(${expandedBbox})["natural"="water"];
             rel(${expandedBbox})["leisure"="nature_reserve"];
@@ -331,6 +345,15 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
             rel(${expandedBbox})["natural"="swamp"];
           );
           out geom(${bbox});
+        ` : ''
+
+        const query = `
+          [out:json][timeout:25];
+          (
+            ${wayQuery}
+          );
+          out geom;
+          ${relationQuery}
         `
 
         const response = await fetch('https://overpass-api.de/api/interpreter', {
