@@ -23,6 +23,56 @@ interface MapData {
   labels: any[]
 }
 
+// IndexedDB cache for map data
+const DB_NAME = 'MapCache'
+const STORE_NAME = 'tiles'
+const DB_VERSION = 1
+
+const openDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION)
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => resolve(request.result)
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'bbox' })
+      }
+    }
+  })
+}
+
+const getCachedData = async (bbox: string): Promise<MapData | null> => {
+  try {
+    const db = await openDB()
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly')
+      const store = transaction.objectStore(STORE_NAME)
+      const request = store.get(bbox)
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => resolve(request.result?.data || null)
+    })
+  } catch (error) {
+    console.error('Cache read error:', error)
+    return null
+  }
+}
+
+const setCachedData = async (bbox: string, data: MapData): Promise<void> => {
+  try {
+    const db = await openDB()
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite')
+      const store = transaction.objectStore(STORE_NAME)
+      const request = store.put({ bbox, data, timestamp: Date.now() })
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => resolve()
+    })
+  } catch (error) {
+    console.error('Cache write error:', error)
+  }
+}
+
 // Custom Canvas Renderer Component
 function CustomCanvasLayer({ map, mapData, showLabels, filters }: { map: L.Map, mapData: MapData, showLabels: boolean, filters: MapFilters }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -130,15 +180,27 @@ function CustomCanvasLayer({ map, mapData, showLabels, filters }: { map: L.Map, 
   return <canvas ref={canvasRef} style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }} />
 }
 
-function CanvasRenderer() {
+function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters: MapFilters }) {
   const map = useMap()
   const [mapData, setMapData] = useState<MapData>({ roads: [], buildings: [], labels: [] })
+  const [isLoading, setIsLoading] = useState(false)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const fetchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
-    // Fetch map data from Overpass API when map bounds change
+    // Debounced fetch to avoid too many API calls during zoom/pan
     const fetchMapData = async () => {
       const bounds = map.getBounds()
       const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`
+
+      // Check cache first
+      const cached = await getCachedData(bbox)
+      if (cached) {
+        setMapData(cached)
+        return
+      }
+
+      setIsLoading(true)
 
       try {
         const query = `
@@ -176,21 +238,186 @@ function CanvasRenderer() {
           name: el.tags.name
         }))
 
-        setMapData({ roads, buildings, labels })
+        const mapData = { roads, buildings, labels }
+        setMapData(mapData)
+
+        // Cache the result
+        await setCachedData(bbox, mapData)
       } catch (error) {
         console.error('Error fetching map data:', error)
+      } finally {
+        setIsLoading(false)
       }
     }
 
-    map.on('moveend', fetchMapData)
+    const debouncedFetch = () => {
+      if (fetchTimeoutRef.current) {
+        clearTimeout(fetchTimeoutRef.current)
+      }
+      fetchTimeoutRef.current = setTimeout(fetchMapData, 500)
+    }
+
+    map.on('moveend', debouncedFetch)
     fetchMapData()
 
     return () => {
-      map.off('moveend', fetchMapData)
+      map.off('moveend', debouncedFetch)
+      if (fetchTimeoutRef.current) {
+        clearTimeout(fetchTimeoutRef.current)
+      }
     }
   }, [map])
 
-  return null // Canvas rendering handled by effect
+  // Render canvas layer
+  useEffect(() => {
+    if (!canvasRef.current || !map) return
+
+    const canvas = canvasRef.current
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const render = () => {
+      const size = map.getSize()
+      canvas.width = size.x
+      canvas.height = size.y
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+      // White background
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+      // Render roads
+      ctx.strokeStyle = '#888888'
+      ctx.lineWidth = 2
+      mapData.roads.forEach((road: any) => {
+        if (road.geometry && road.geometry.coordinates) {
+          ctx.beginPath()
+          road.geometry.coordinates.forEach((coord: [number, number], i: number) => {
+            const point = map.latLngToContainerPoint([coord[1], coord[0]])
+            if (i === 0) ctx.moveTo(point.x, point.y)
+            else ctx.lineTo(point.x, point.y)
+          })
+          ctx.stroke()
+        }
+      })
+
+      // Render buildings
+      ctx.fillStyle = '#dddddd'
+      ctx.strokeStyle = '#999999'
+      ctx.lineWidth = 1
+      mapData.buildings.forEach((building: any) => {
+        if (building.geometry && building.geometry.coordinates && building.geometry.coordinates[0]) {
+          const rings = Array.isArray(building.geometry.coordinates[0][0])
+            ? building.geometry.coordinates[0]
+            : [building.geometry.coordinates[0]]
+
+          rings.forEach((ring: [number, number][]) => {
+            if (ring && ring.length > 0) {
+              ctx.beginPath()
+              ring.forEach((coord: [number, number], i: number) => {
+                if (coord && coord.length === 2) {
+                  const point = map.latLngToContainerPoint([coord[1], coord[0]])
+                  if (i === 0) ctx.moveTo(point.x, point.y)
+                  else ctx.lineTo(point.x, point.y)
+                }
+              })
+              ctx.closePath()
+              ctx.fill()
+              ctx.stroke()
+            }
+          })
+        }
+      })
+
+      // Render labels with collision detection
+      if (showLabels) {
+        ctx.fillStyle = '#000000'
+        ctx.font = '14px Arial'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+
+        // Track occupied rectangles for collision detection
+        const occupiedAreas: { x: number, y: number, width: number, height: number }[] = []
+
+        const isOverlapping = (x: number, y: number, width: number, height: number) => {
+          const padding = 5
+          return occupiedAreas.some(rect =>
+            x < rect.x + rect.width + padding &&
+            x + width + padding > rect.x &&
+            y < rect.y + rect.height + padding &&
+            y + height + padding > rect.y
+          )
+        }
+
+        mapData.labels.forEach((label: any) => {
+          if (label.lat && label.lon && label.name) {
+            const point = map.latLngToContainerPoint([label.lat, label.lon])
+            const metrics = ctx.measureText(label.name)
+            const width = metrics.width
+            const height = 16
+            const x = point.x - width / 2
+            const y = point.y - height / 2
+
+            if (!isOverlapping(x, y, width, height)) {
+              // Draw white background for better readability
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'
+              ctx.fillRect(x - 2, y - 2, width + 4, height + 4)
+
+              ctx.fillStyle = '#000000'
+              ctx.fillText(label.name, point.x, point.y)
+
+              occupiedAreas.push({ x, y, width, height })
+            }
+          }
+        })
+      }
+    }
+
+    const handleMapUpdate = () => {
+      render()
+    }
+
+    map.on('move zoom viewreset', handleMapUpdate)
+    render()
+
+    return () => {
+      map.off('move zoom viewreset', handleMapUpdate)
+    }
+  }, [map, mapData, showLabels])
+
+  return (
+    <>
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+          zIndex: 400
+        }}
+      />
+      {isLoading && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
+          color: 'white',
+          padding: '12px 24px',
+          borderRadius: '8px',
+          zIndex: 500,
+          fontSize: '14px'
+        }}>
+          Loading map data...
+        </div>
+      )}
+    </>
+  )
 }
 
 interface SearchResult {
@@ -276,8 +503,14 @@ function App() {
   const [filters, setFilters] = useState<MapFilters>(PRESET_PALETTES[0].filters)
   const [customPalettes, setCustomPalettes] = useState<Palette[]>([])
   const [selectedPalette, setSelectedPalette] = useState<string>('Default')
-  const [showLabels, setShowLabels] = useState<boolean>(true)
-  const [useCustomRenderer, setUseCustomRenderer] = useState<boolean>(false)
+  const [showLabels, setShowLabels] = useState<boolean>(() => {
+    const saved = localStorage.getItem('showLabels')
+    return saved ? JSON.parse(saved) : true
+  })
+  const [useCustomRenderer, setUseCustomRenderer] = useState<boolean>(() => {
+    const saved = localStorage.getItem('useCustomRenderer')
+    return saved ? JSON.parse(saved) : false
+  })
   const debounceTimer = useRef<NodeJS.Timeout | null>(null)
 
   // Load last search query on mount
@@ -365,6 +598,15 @@ function App() {
     setFilters({...filters, [key]: value})
     setSelectedPalette('Custom')
   }
+
+  // Save preferences to localStorage
+  useEffect(() => {
+    localStorage.setItem('showLabels', JSON.stringify(showLabels))
+  }, [showLabels])
+
+  useEffect(() => {
+    localStorage.setItem('useCustomRenderer', JSON.stringify(useCustomRenderer))
+  }, [useCustomRenderer])
 
   const filterStyle = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%) hue-rotate(${filters.hueRotate}deg) grayscale(${filters.grayscale}%)`
 
@@ -605,7 +847,7 @@ function App() {
               }
             />
           )}
-          {useCustomRenderer && <CanvasRenderer />}
+          {useCustomRenderer && <CanvasRenderer showLabels={showLabels} filters={filters} />}
           {selectedPosition && (
             <Marker position={selectedPosition}>
               <Popup>
