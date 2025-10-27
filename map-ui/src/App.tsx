@@ -313,6 +313,13 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
           return
         }
 
+        // Handle gateway timeout - use cached data if available
+        if (response.status === 504) {
+          console.warn('Overpass API timeout. Using cached data if available.')
+          setIsLoading(false)
+          return
+        }
+
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`)
         }
@@ -334,30 +341,6 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         }
 
         const data: OSMResponse = await response.json()
-
-        // Debug: check all relations
-        const allRelations = data.elements.filter(el => el.type === 'relation')
-        console.log('All relations in response:', allRelations.map(el => ({
-          type: el.type,
-          name: el.tags?.name,
-          leisure: el.tags?.leisure,
-          boundary: el.tags?.boundary,
-          natural: el.tags?.natural,
-          landuse: el.tags?.landuse,
-          members: el.members?.length,
-          hasGeometry: el.members?.some(m => m.geometry && m.geometry.length > 0)
-        })))
-
-        const greatSwamp = allRelations.find(el =>
-          el.tags?.name === 'Great Swamp National Wildlife Refuge'
-        )
-        console.log('Great Swamp National Wildlife Refuge relation:', greatSwamp ? {
-          name: greatSwamp.tags?.name,
-          tags: greatSwamp.tags,
-          membersCount: greatSwamp.members?.length,
-          outerMembers: greatSwamp.members?.filter(m => m.role === 'outer').length,
-          membersWithGeometry: greatSwamp.members?.filter(m => m.geometry && m.geometry.length > 0).length
-        } : 'NOT FOUND')
 
         const roads: Road[] = data.elements
           .filter((el): el is OSMElement & { tags: Record<string, string> } => !!el.tags?.highway && !!el.geometry)
@@ -428,20 +411,7 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
             }
           }))
 
-        // Debug: check if Great Swamp made it through
-        const greatSwampWildlife = parks.find(p => p.name === 'Great Swamp National Wildlife Refuge')
-        console.log('Great Swamp National Wildlife Refuge in parks before final filter:', greatSwampWildlife ? {
-          name: greatSwampWildlife.name,
-          type: greatSwampWildlife.type,
-          coordsLength: greatSwampWildlife.geometry.coordinates.length,
-          firstCoordLength: greatSwampWildlife.geometry.coordinates[0]?.length,
-          sampleCoords: greatSwampWildlife.geometry.coordinates[0]?.slice(0, 3)
-        } : 'NOT FOUND - filtered during parks processing')
-
         const filteredParks = parks.filter(p => p.geometry.coordinates.length > 0 && p.geometry.coordinates[0].length > 0)
-
-        const greatSwampFiltered = filteredParks.find(p => p.name === 'Great Swamp National Wildlife Refuge')
-        console.log('Great Swamp National Wildlife Refuge after final filter:', greatSwampFiltered ? 'FOUND' : 'FILTERED OUT')
 
         const labels: Label[] = data.elements
           .filter((el): el is OSMElement & { lat: number, lon: number, tags: Record<string, string> } =>
@@ -461,9 +431,7 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
             parks: parks.length,
             water: water.length,
             parkTypes: [...new Set(parks.map((p: Park) => p.type))],
-            waterTypes: [...new Set(water.map((w: Water) => w.type))],
-            relations: data.elements.filter(el => el.type === 'relation').length,
-            greatSwampRelations: data.elements.filter(el => el.type === 'relation' && el.tags?.name === 'Great Swamp').length
+            waterTypes: [...new Set(water.map((w: Water) => w.type))]
           })
         }
 
