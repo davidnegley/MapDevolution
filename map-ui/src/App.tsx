@@ -902,7 +902,10 @@ function App() {
     const saved = localStorage.getItem('lastPosition')
     return saved ? JSON.parse(saved) : null
   })
-  const [selectedBounds, setSelectedBounds] = useState<[[number, number], [number, number]] | null>(null)
+  const [selectedBounds, setSelectedBounds] = useState<[[number, number], [number, number]] | null>(() => {
+    const saved = localStorage.getItem('lastBounds')
+    return saved ? JSON.parse(saved) : null
+  })
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
   const [filters, setFilters] = useState<MapFilters>(PRESET_PALETTES[0].filters)
@@ -970,12 +973,21 @@ function App() {
     if (result.boundingbox && result.boundingbox.length === 4) {
       const [south, north, west, east] = result.boundingbox.map(parseFloat)
       const bounds: [[number, number], [number, number]] = [[south, west], [north, east]]
+
       setSelectedBounds(bounds)
       setSelectedPosition(null) // Clear position so bounds take precedence
+
+      // Save bounds to localStorage
+      localStorage.setItem('lastBounds', JSON.stringify(bounds))
+      localStorage.removeItem('lastPosition') // Remove position when using bounds
     } else {
       // No bounding box, just center on the point
       setSelectedPosition(position)
       setSelectedBounds(null)
+
+      // Save position to localStorage
+      localStorage.setItem('lastPosition', JSON.stringify(position))
+      localStorage.removeItem('lastBounds') // Remove bounds when using position
     }
 
     // Remove comma after street number
@@ -984,8 +996,7 @@ function App() {
     setSuggestions([])
     setShowSuggestions(false)
 
-    // Save to localStorage
-    localStorage.setItem('lastPosition', JSON.stringify(position))
+    // Save query to localStorage
     localStorage.setItem('lastSearchQuery', cleanedAddress)
   }
 
