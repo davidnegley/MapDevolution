@@ -811,16 +811,20 @@ interface SearchResult {
   display_name: string
   lat: string
   lon: string
+  boundingbox?: [string, string, string, string] // [south, north, west, east]
 }
 
-function MapController({ position, zoom }: { position: [number, number] | null, zoom: number }) {
+function MapController({ position, zoom, bounds }: { position: [number, number] | null, zoom: number, bounds?: [[number, number], [number, number]] | null }) {
   const map = useMap()
 
   useEffect(() => {
-    if (position) {
+    if (bounds) {
+      // If we have bounds, fit to them instead of using position/zoom
+      map.fitBounds(bounds, { padding: [50, 50], animate: true, duration: 1.5, maxZoom: 15 })
+    } else if (position) {
       map.flyTo(position, zoom, { duration: 1.5 })
     }
-  }, [position, zoom, map])
+  }, [position, zoom, bounds, map])
 
   return null
 }
@@ -884,6 +888,7 @@ function App() {
     const saved = localStorage.getItem('lastPosition')
     return saved ? JSON.parse(saved) : null
   })
+  const [selectedBounds, setSelectedBounds] = useState<[[number, number], [number, number]] | null>(null)
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
   const [filters, setFilters] = useState<MapFilters>(PRESET_PALETTES[0].filters)
@@ -946,7 +951,19 @@ function App() {
     const lat = parseFloat(result.lat)
     const lon = parseFloat(result.lon)
     const position: [number, number] = [lat, lon]
-    setSelectedPosition(position)
+
+    // If result has a bounding box, use it to fit the view
+    if (result.boundingbox && result.boundingbox.length === 4) {
+      const [south, north, west, east] = result.boundingbox.map(parseFloat)
+      const bounds: [[number, number], [number, number]] = [[south, west], [north, east]]
+      setSelectedBounds(bounds)
+      setSelectedPosition(null) // Clear position so bounds take precedence
+    } else {
+      // No bounding box, just center on the point
+      setSelectedPosition(position)
+      setSelectedBounds(null)
+    }
+
     // Remove comma after street number
     const cleanedAddress = result.display_name.replace(/^(\d+),\s*/, '$1 ')
     setSearchQuery(cleanedAddress)
@@ -1223,7 +1240,7 @@ function App() {
           zoom={selectedPosition ? 15 : 12}
           style={{ height: '100%', width: '100%' }}
         >
-          <MapController position={selectedPosition} zoom={15} />
+          <MapController position={selectedPosition} zoom={15} bounds={selectedBounds} />
           {!useCustomRenderer && (
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
