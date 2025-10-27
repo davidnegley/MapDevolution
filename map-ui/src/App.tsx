@@ -232,13 +232,20 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       const bounds = map.getBounds()
       const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`
 
-      // Expand bbox slightly for relation queries (helps catch large areas)
+      // Calculate bbox dimensions and zoom level
       const south = bounds.getSouth()
       const west = bounds.getWest()
       const north = bounds.getNorth()
       const east = bounds.getEast()
-      const latExpand = (north - south) * 0.3
-      const lonExpand = (east - west) * 0.3
+      const latSpan = north - south
+      const lonSpan = east - west
+
+      // Skip relation queries when zoomed out too far (bbox > 1 degree)
+      const skipRelations = latSpan > 1 || lonSpan > 1
+
+      // Expand bbox slightly for relation queries (helps catch large areas)
+      const latExpand = latSpan * 0.3
+      const lonExpand = lonSpan * 0.3
 
       // Limit expanded bbox to max ~0.5 degrees (to avoid Overpass API rejecting query)
       const maxExpandLat = Math.min(latExpand, 0.5)
@@ -268,7 +275,29 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       setIsLoading(true)
 
       try {
-        const query = `
+        const query = skipRelations ? `
+          [out:json][timeout:25];
+          (
+            way["highway"](${bbox});
+            way["building"](${bbox});
+            way["waterway"](${bbox});
+            way["natural"="water"](${bbox});
+            way["leisure"="park"](${bbox});
+            way["leisure"="nature_reserve"](${bbox});
+            way["boundary"="national_park"](${bbox});
+            way["boundary"="protected_area"](${bbox});
+            way["landuse"="forest"](${bbox});
+            way["landuse"="grass"](${bbox});
+            way["landuse"="meadow"](${bbox});
+            way["landuse"="wetland"](${bbox});
+            way["natural"="wood"](${bbox});
+            way["natural"="wetland"](${bbox});
+            way["natural"="marsh"](${bbox});
+            way["natural"="swamp"](${bbox});
+            node["name"](${bbox});
+          );
+          out geom;
+        ` : `
           [out:json][timeout:25];
           (
             way["highway"](${bbox});
