@@ -543,6 +543,13 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
 
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
+      // Check zoom level - if too zoomed out, don't render (let tile layer show)
+      const zoom = map.getZoom()
+      if (zoom < 10) {
+        // Too zoomed out - features would be invisible anyway
+        return
+      }
+
       // Light background
       ctx.fillStyle = '#f5f5f5'
       ctx.fillRect(0, 0, canvas.width, canvas.height)
@@ -1289,15 +1296,14 @@ function App() {
           style={{ height: '100%', width: '100%' }}
         >
           <MapController position={selectedPosition} zoom={15} bounds={selectedBounds} />
-          {!useCustomRenderer && (
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              url={showLabels
-                ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                : "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
-              }
-            />
-          )}
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url={showLabels
+              ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              : "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
+            }
+            opacity={useCustomRenderer ? 0 : 1}
+          />
           {useCustomRenderer && <CanvasRenderer showLabels={showLabels} filters={filters} />}
           {selectedPosition && (
             <Marker position={selectedPosition}>
