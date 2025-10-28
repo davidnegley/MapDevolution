@@ -253,8 +253,8 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       // Skip minor roads when zoomed out beyond zoom 11
       const skipMinorRoads = approximateZoom < 11
 
-      // Skip all detail when zoomed way out (zoom < 9)
-      const skipAllDetail = approximateZoom < 9
+      // At very low zoom, only show major features (parks, water)
+      const onlyMajorFeatures = approximateZoom < 9
 
       // Expand bbox slightly for relation queries (helps catch large areas)
       const latExpand = latSpan * 0.3
@@ -291,8 +291,8 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         // Build query dynamically based on zoom level
         const queryParts: string[] = []
 
-        // Major roads always included
-        if (!skipAllDetail) {
+        // Roads - skip at very low zoom, only major roads at medium zoom
+        if (!onlyMajorFeatures) {
           if (skipMinorRoads) {
             // Only major roads
             queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${bbox});`)
@@ -303,37 +303,37 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         }
 
         // Buildings only at high zoom
-        if (!skipBuildings && !skipAllDetail) {
+        if (!skipBuildings && !onlyMajorFeatures) {
           queryParts.push(`way["building"](${bbox});`)
         }
 
-        // Water features
-        if (!skipAllDetail) {
-          queryParts.push(`way["waterway"](${bbox});`)
-          queryParts.push(`way["natural"="water"](${bbox});`)
-        }
+        // Water features - always show
+        queryParts.push(`way["waterway"](${bbox});`)
+        queryParts.push(`way["natural"="water"](${bbox});`)
 
-        // Parks and natural features - always show major ones
-        if (!skipAllDetail) {
-          queryParts.push(`way["leisure"="park"](${bbox});`)
-          queryParts.push(`way["leisure"="nature_reserve"](${bbox});`)
-          queryParts.push(`way["boundary"="national_park"](${bbox});`)
-          queryParts.push(`way["boundary"="protected_area"](${bbox});`)
-          queryParts.push(`way["landuse"="forest"](${bbox});`)
-          queryParts.push(`way["landuse"="grass"](${bbox});`)
-          queryParts.push(`way["landuse"="meadow"](${bbox});`)
-          queryParts.push(`way["landuse"="wetland"](${bbox});`)
-          queryParts.push(`way["natural"="wood"](${bbox});`)
-          queryParts.push(`way["natural"="wetland"](${bbox});`)
-          queryParts.push(`way["natural"="marsh"](${bbox});`)
-          queryParts.push(`way["natural"="swamp"](${bbox});`)
+        // Parks and natural features - always show (visible at all zoom levels)
+        queryParts.push(`way["leisure"="park"](${bbox});`)
+        queryParts.push(`way["leisure"="nature_reserve"](${bbox});`)
+        queryParts.push(`way["boundary"="national_park"](${bbox});`)
+        queryParts.push(`way["boundary"="protected_area"](${bbox});`)
+        queryParts.push(`way["landuse"="forest"](${bbox});`)
+        queryParts.push(`way["landuse"="grass"](${bbox});`)
+        queryParts.push(`way["landuse"="meadow"](${bbox});`)
+        queryParts.push(`way["landuse"="wetland"](${bbox});`)
+        queryParts.push(`way["natural"="wood"](${bbox});`)
+        queryParts.push(`way["natural"="wetland"](${bbox});`)
+        queryParts.push(`way["natural"="marsh"](${bbox});`)
+        queryParts.push(`way["natural"="swamp"](${bbox});`)
+
+        // Labels only at medium/high zoom
+        if (!onlyMajorFeatures) {
           queryParts.push(`node["name"](${bbox});`)
         }
 
         const wayQuery = queryParts.length > 0 ? queryParts.join('\n            ') : ''
 
-        // Relation queries (for large protected areas)
-        const relationQuery = !skipRelations && !skipAllDetail ? `
+        // Relation queries (for large protected areas) - skip at very low zoom
+        const relationQuery = !skipRelations && !onlyMajorFeatures ? `
           (
             rel(${expandedBbox})["natural"="water"];
             rel(${expandedBbox})["leisure"="nature_reserve"];
