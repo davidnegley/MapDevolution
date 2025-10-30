@@ -1,4 +1,4 @@
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
+import { MapContainer, Marker, Popup, useMap } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 import { useState, useEffect, useRef } from 'react'
@@ -51,18 +51,76 @@ interface Label {
   name: string
 }
 
+interface Boundary {
+  type: string
+  name?: string
+  geometry: {
+    coordinates: number[][][] | number[][][][]
+  }
+}
+
 interface MapData {
   roads: Road[]
   buildings: Building[]
   water: Water[]
   parks: Park[]
   labels: Label[]
+  boundaries: Boundary[]
 }
 
 // IndexedDB cache for map data
 const DB_NAME = 'MapCache'
 const STORE_NAME = 'tiles'
 const DB_VERSION = 1
+
+// Douglas-Peucker algorithm for geometry simplification
+const simplifyGeometry = (coords: number[][], tolerance: number): number[][] => {
+  if (coords.length <= 2) return coords
+
+  const sqTolerance = tolerance * tolerance
+
+  // Find point with maximum distance from line segment
+  let maxDist = 0
+  let maxIndex = 0
+  const first = coords[0]
+  const last = coords[coords.length - 1]
+
+  for (let i = 1; i < coords.length - 1; i++) {
+    const dist = perpendicularDistanceSquared(coords[i], first, last)
+    if (dist > maxDist) {
+      maxDist = dist
+      maxIndex = i
+    }
+  }
+
+  // If max distance is greater than tolerance, recursively simplify
+  if (maxDist > sqTolerance) {
+    const left = simplifyGeometry(coords.slice(0, maxIndex + 1), tolerance)
+    const right = simplifyGeometry(coords.slice(maxIndex), tolerance)
+    return [...left.slice(0, -1), ...right]
+  }
+
+  return [first, last]
+}
+
+const perpendicularDistanceSquared = (point: number[], lineStart: number[], lineEnd: number[]): number => {
+  const [x, y] = point
+  const [x1, y1] = lineStart
+  const [x2, y2] = lineEnd
+
+  const dx = x2 - x1
+  const dy = y2 - y1
+
+  if (dx === 0 && dy === 0) {
+    return (x - x1) ** 2 + (y - y1) ** 2
+  }
+
+  const t = Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy)))
+  const projX = x1 + t * dx
+  const projY = y1 + t * dy
+
+  return (x - projX) ** 2 + (y - projY) ** 2
+}
 
 const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
@@ -219,8 +277,17 @@ function CustomCanvasLayer({ map, mapData, showLabels, filters }: { map: L.Map, 
 
 function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters: MapFilters }) {
   const map = useMap()
-  const [mapData, setMapData] = useState<MapData>({ roads: [], buildings: [], water: [], parks: [], labels: [] })
+  const [mapData, setMapData] = useState<MapData>({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries: [] })
   const [isLoading, setIsLoading] = useState(false)
+
+  useEffect(() => {
+    console.log('mapData updated:', {
+      roads: mapData.roads.length,
+      boundaries: mapData.boundaries.length,
+      parks: mapData.parks.length,
+      water: mapData.water.length
+    })
+  }, [mapData])
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fetchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const rateLimitedUntil = useRef<number>(0)
@@ -230,15 +297,169 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
     // Debounced fetch to avoid too many API calls during zoom/pan
     const fetchMapData = async () => {
       const bounds = map.getBounds()
-      const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`
 
-      // Calculate bbox dimensions and zoom level
-      const south = bounds.getSouth()
-      const west = bounds.getWest()
-      const north = bounds.getNorth()
-      const east = bounds.getEast()
-      const latSpan = north - south
+      // Normalize bounds to valid lat/lon ranges
+      const south = Math.max(-90, Math.min(90, bounds.getSouth()))
+      const north = Math.max(-90, Math.min(90, bounds.getNorth()))
+      let west = bounds.getWest()
+      let east = bounds.getEast()
+
+      // Wrap longitude to -180..180 range
+      while (west < -180) west += 360
+      while (west > 180) west -= 360
+      while (east < -180) east += 360
+      while (east > 180) east -= 360
+
+      // If bbox spans more than 360 degrees (world wrap), fetch only country boundaries
       const lonSpan = east - west
+      if (Math.abs(lonSpan) > 180) {
+        // Check if we already fetched world boundaries
+        if (lastBboxRef.current === 'world-wrap-boundaries') {
+          console.log('World boundaries already fetched, skipping')
+          return
+        }
+
+        console.warn('Bbox spans too wide (world wrap), fetching only country boundaries')
+
+        // For very large areas, just fetch country boundaries
+        try {
+          interface OSMElement {
+            type: string
+            tags?: Record<string, string>
+            geometry?: Array<{ lat: number, lon: number }>
+            members?: Array<{
+              role: string
+              geometry?: Array<{ lat: number, lon: number }>
+            }>
+          }
+
+          interface OSMResponse {
+            elements: OSMElement[]
+          }
+
+          const query = `
+            [out:json][timeout:25];
+            (
+              relation["boundary"="administrative"]["admin_level"="2"];
+            );
+            out geom;
+          `
+
+          const response = await fetch('https://overpass-api.de/api/interpreter', {
+            method: 'POST',
+            body: `data=${encodeURIComponent(query)}`
+          })
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`)
+          }
+
+          const data: OSMResponse = await response.json()
+
+          const boundaries: Boundary[] = data.elements
+            .filter((el: OSMElement): el is OSMElement & { tags: Record<string, string> } =>
+              !!el.tags?.boundary && el.tags.boundary === 'administrative' && el.tags?.admin_level === '2')
+            .map((el: OSMElement & { tags: Record<string, string> }) => {
+              // For relations with members, need to handle connected vs disconnected ways
+              const coords = el.type === 'relation' && el.members
+                ? (() => {
+                    const outerWays = el.members
+                      .filter((m: { role: string, geometry?: Array<{ lat: number, lon: number }> }) => m.role === 'outer' || m.role === '')
+                      .map((m: { geometry?: Array<{ lat: number, lon: number }> }) =>
+                        m.geometry?.filter((pt: { lat: number, lon: number }) => pt && pt.lon != null && pt.lat != null)
+                          .map((pt: { lat: number, lon: number }) => [pt.lon, pt.lat]) || []
+                      )
+                      .filter((way: number[][]) => way.length > 0)
+
+                    if (outerWays.length === 0) return []
+                    if (outerWays.length === 1) return [outerWays[0]]
+
+                    // Group connected ways together
+                    const rings: number[][][] = []
+                    const used = new Set<number>()
+
+                    for (let i = 0; i < outerWays.length; i++) {
+                      if (used.has(i)) continue
+
+                      let currentRing = [...outerWays[i]]
+                      used.add(i)
+
+                      // Try to connect more ways to this ring
+                      let foundConnection = true
+                      while (foundConnection) {
+                        foundConnection = false
+                        const ringStart = currentRing[0]
+                        const ringEnd = currentRing[currentRing.length - 1]
+
+                        for (let j = 0; j < outerWays.length; j++) {
+                          if (used.has(j)) continue
+
+                          const way = outerWays[j]
+                          const wayStart = way[0]
+                          const wayEnd = way[way.length - 1]
+
+                          // Check if this way connects to the end of current ring
+                          if (Math.abs(ringEnd[0] - wayStart[0]) < 0.0001 && Math.abs(ringEnd[1] - wayStart[1]) < 0.0001) {
+                            currentRing = [...currentRing.slice(0, -1), ...way]
+                            used.add(j)
+                            foundConnection = true
+                            break
+                          }
+                          // Check if this way connects reversed
+                          else if (Math.abs(ringEnd[0] - wayEnd[0]) < 0.0001 && Math.abs(ringEnd[1] - wayEnd[1]) < 0.0001) {
+                            currentRing = [...currentRing.slice(0, -1), ...way.reverse()]
+                            used.add(j)
+                            foundConnection = true
+                            break
+                          }
+                          // Check if this way connects to the start of current ring
+                          else if (Math.abs(ringStart[0] - wayEnd[0]) < 0.0001 && Math.abs(ringStart[1] - wayEnd[1]) < 0.0001) {
+                            currentRing = [...way.slice(0, -1), ...currentRing]
+                            used.add(j)
+                            foundConnection = true
+                            break
+                          }
+                          // Check if this way connects to start reversed
+                          else if (Math.abs(ringStart[0] - wayStart[0]) < 0.0001 && Math.abs(ringStart[1] - wayStart[1]) < 0.0001) {
+                            currentRing = [...way.reverse().slice(0, -1), ...currentRing]
+                            used.add(j)
+                            foundConnection = true
+                            break
+                          }
+                        }
+                      }
+
+                      rings.push(currentRing)
+                    }
+
+                    return rings
+                  })()
+                : [[el.geometry?.filter((pt: { lat: number, lon: number }) => pt && pt.lon != null && pt.lat != null)
+                    .map((pt: { lat: number, lon: number }) => [pt.lon, pt.lat]) || []]]
+
+              return {
+                type: 'country',
+                name: el.tags?.name,
+                geometry: { coordinates: coords as unknown as number[][][] }
+              }
+            })
+            .filter((b: Boundary) => b.geometry.coordinates.length > 0 && b.geometry.coordinates[0] && b.geometry.coordinates[0].length > 0)
+
+          console.log('Fetched boundaries:', boundaries.length, 'Setting mapData with boundaries')
+          setMapData({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries })
+          console.log('setMapData called with', boundaries.length, 'boundaries')
+          lastBboxRef.current = 'world-wrap-boundaries' // Mark as fetched to prevent refetch
+        } catch (error) {
+          console.error('Error fetching boundaries:', error)
+          // Don't clear existing data on error - keep what we have
+        }
+        return
+      }
+
+      const bbox = `${south},${west},${north},${east}`
+      const latSpan = north - south
+
+      console.log('Map bounds:', { south, west, north, east, latSpan, lonSpan })
 
       // Calculate zoom level from lat span (rough approximation)
       // At equator: zoom ~= log2(360 / latSpan)
@@ -279,11 +500,30 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
 
       // Check cache first
       const cached = await getCachedData(bbox)
-      if (cached && cached.water && cached.parks) {
-        setMapData(cached)
-        lastBboxRef.current = bbox
-        return
+      if (cached) {
+        const hasData = (cached.roads?.length || 0) > 0 ||
+                        (cached.parks?.length || 0) > 0 ||
+                        (cached.water?.length || 0) > 0
+
+        console.log('Using cached data for bbox:', bbox, {
+          roads: cached.roads?.length || 0,
+          buildings: cached.buildings?.length || 0,
+          parks: cached.parks?.length || 0,
+          water: cached.water?.length || 0,
+          hasData
+        })
+
+        // Only use cache if it has actual data (not empty from a failed fetch)
+        if (hasData) {
+          setMapData(cached)
+          lastBboxRef.current = bbox
+          return
+        } else {
+          console.log('Cached data is empty, fetching fresh data...')
+        }
       }
+
+      console.log('Fetching map data for bbox:', bbox, 'zoom level:', approximateZoom.toFixed(1))
 
       setIsLoading(true)
 
@@ -291,15 +531,16 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         // Build query dynamically based on zoom level
         const queryParts: string[] = []
 
-        // Roads - skip at very low zoom, only major roads at medium zoom
-        if (!onlyMajorFeatures) {
-          if (skipMinorRoads) {
-            // Only major roads
-            queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${bbox});`)
-          } else {
-            // All roads
-            queryParts.push(`way["highway"](${bbox});`)
-          }
+        // Roads - always show at least major highways
+        if (onlyMajorFeatures) {
+          // At very low zoom, only show interstates and major highways
+          queryParts.push(`way["highway"~"motorway|trunk"](${bbox});`)
+        } else if (skipMinorRoads) {
+          // At medium zoom, show major roads
+          queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${bbox});`)
+        } else {
+          // At high zoom, show all roads
+          queryParts.push(`way["highway"](${bbox});`)
         }
 
         // Buildings only at high zoom
@@ -328,6 +569,11 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         // Labels only at medium/high zoom
         if (!onlyMajorFeatures) {
           queryParts.push(`node["name"](${bbox});`)
+        }
+
+        // Country boundaries for continent-scale views (zoom < 6)
+        if (approximateZoom < 6) {
+          queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${bbox});`)
         }
 
         const wayQuery = queryParts.length > 0 ? queryParts.join('\n            ') : ''
@@ -405,14 +651,24 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
 
         const data: OSMResponse = await response.json()
 
+        // Calculate simplification tolerance based on zoom level
+        // Higher tolerance (more simplification) at lower zoom levels
+        const simplificationTolerance = approximateZoom < 10 ? 0.001 : approximateZoom < 13 ? 0.0001 : 0
+
         const roads: Road[] = data.elements
           .filter((el): el is OSMElement & { tags: Record<string, string> } => !!el.tags?.highway && !!el.geometry)
-          .map((el) => ({
-            type: el.tags.highway,
-            geometry: {
-              coordinates: el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []
+          .map((el) => {
+            const coords = el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []
+            const simplified = simplificationTolerance > 0 && coords.length > 2
+              ? simplifyGeometry(coords, simplificationTolerance)
+              : coords
+            return {
+              type: el.tags.highway,
+              geometry: {
+                coordinates: simplified
+              }
             }
-          }))
+          })
           .filter(r => r.geometry.coordinates.length > 0)
 
         const buildings: Building[] = data.elements
@@ -486,17 +742,106 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
             name: el.tags.name
           }))
 
-        const mapData = { roads, buildings, water, parks: filteredParks, labels }
+        // Parse boundaries (countries, coastlines) for continent-scale views
+        const boundaries: Boundary[] = data.elements
+          .filter((el) => el.tags?.boundary === 'administrative' && (el.tags?.admin_level === '2' || el.tags?.admin_level === '4'))
+          .map((el) => {
+            // For relations with members, need to handle connected vs disconnected ways
+            const coords = el.type === 'relation' && el.members
+              ? (() => {
+                  const outerWays = el.members
+                    .filter(m => m.role === 'outer' || m.role === '')
+                    .map(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || [])
+                    .filter((way: number[][]) => way.length > 0)
+
+                  if (outerWays.length === 0) return []
+                  if (outerWays.length === 1) return [outerWays[0]]
+
+                  // Group connected ways together
+                  const rings: number[][][] = []
+                  const used = new Set<number>()
+
+                  for (let i = 0; i < outerWays.length; i++) {
+                    if (used.has(i)) continue
+
+                    let currentRing = [...outerWays[i]]
+                    used.add(i)
+
+                    // Try to connect more ways to this ring
+                    let foundConnection = true
+                    while (foundConnection) {
+                      foundConnection = false
+                      const ringStart = currentRing[0]
+                      const ringEnd = currentRing[currentRing.length - 1]
+
+                      for (let j = 0; j < outerWays.length; j++) {
+                        if (used.has(j)) continue
+
+                        const way = outerWays[j]
+                        const wayStart = way[0]
+                        const wayEnd = way[way.length - 1]
+
+                        // Check if this way connects to the end of current ring
+                        if (Math.abs(ringEnd[0] - wayStart[0]) < 0.0001 && Math.abs(ringEnd[1] - wayStart[1]) < 0.0001) {
+                          currentRing = [...currentRing.slice(0, -1), ...way]
+                          used.add(j)
+                          foundConnection = true
+                          break
+                        }
+                        // Check if this way connects reversed
+                        else if (Math.abs(ringEnd[0] - wayEnd[0]) < 0.0001 && Math.abs(ringEnd[1] - wayEnd[1]) < 0.0001) {
+                          currentRing = [...currentRing.slice(0, -1), ...way.reverse()]
+                          used.add(j)
+                          foundConnection = true
+                          break
+                        }
+                        // Check if this way connects to the start of current ring
+                        else if (Math.abs(ringStart[0] - wayEnd[0]) < 0.0001 && Math.abs(ringStart[1] - wayEnd[1]) < 0.0001) {
+                          currentRing = [...way.slice(0, -1), ...currentRing]
+                          used.add(j)
+                          foundConnection = true
+                          break
+                        }
+                        // Check if this way connects to start reversed
+                        else if (Math.abs(ringStart[0] - wayStart[0]) < 0.0001 && Math.abs(ringStart[1] - wayStart[1]) < 0.0001) {
+                          currentRing = [...way.reverse().slice(0, -1), ...currentRing]
+                          used.add(j)
+                          foundConnection = true
+                          break
+                        }
+                      }
+                    }
+
+                    rings.push(currentRing)
+                  }
+
+                  return rings
+                })()
+              : [[el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []]]
+
+            return {
+              type: el.tags?.admin_level === '2' ? 'country' : 'state',
+              name: el.tags?.name,
+              geometry: {
+                coordinates: coords
+              }
+            }
+          })
+          .filter(b => b.geometry.coordinates.length > 0 && b.geometry.coordinates[0].length > 0)
+
+        const mapData = { roads, buildings, water, parks: filteredParks, labels, boundaries }
 
         // Debug: log what we found
-        if (parks.length > 0 || water.length > 0) {
-          console.log('Features found:', {
-            parks: parks.length,
-            water: water.length,
-            parkTypes: [...new Set(parks.map((p: Park) => p.type))],
-            waterTypes: [...new Set(water.map((w: Water) => w.type))]
-          })
-        }
+        console.log('Features found:', {
+          roads: roads.length,
+          buildings: buildings.length,
+          parks: filteredParks.length,
+          water: water.length,
+          labels: labels.length,
+          boundaries: boundaries.length,
+          parkTypes: [...new Set(filteredParks.map((p: Park) => p.type))],
+          waterTypes: [...new Set(water.map((w: Water) => w.type))]
+        })
 
         setMapData(mapData)
         lastBboxRef.current = bbox
@@ -518,6 +863,7 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
     }
 
     map.on('moveend', debouncedFetch)
+    // Fetch immediately on first load (no debounce)
     fetchMapData()
 
     return () => {
@@ -543,16 +889,110 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
 
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-      // Check zoom level - if too zoomed out, don't render (let tile layer show)
       const zoom = map.getZoom()
-      if (zoom < 10) {
-        // Too zoomed out - features would be invisible anyway
-        return
-      }
+      const hasData = (mapData.roads?.length || 0) > 0 ||
+                      (mapData.parks?.length || 0) > 0 ||
+                      (mapData.water?.length || 0) > 0 ||
+                      (mapData.boundaries?.length || 0) > 0
 
-      // Light background
-      ctx.fillStyle = '#f5f5f5'
+      // At very low zoom (< 6), show ocean background (land will be drawn on top)
+      // Otherwise show white background for land
+      if (zoom < 6) {
+        ctx.fillStyle = '#b3d9ff'  // Light ocean blue
+      } else if (hasData) {
+        ctx.fillStyle = '#ffffff'  // White land
+      } else {
+        ctx.fillStyle = '#b3d9ff'  // Light ocean blue (no data)
+      }
       ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+      console.log('Rendering canvas:', {
+        canvasSize: { width: canvas.width, height: canvas.height },
+        zoom,
+        hasData,
+        dataLength: {
+          roads: mapData.roads?.length || 0,
+          parks: mapData.parks?.length || 0,
+          water: mapData.water?.length || 0,
+          boundaries: mapData.boundaries?.length || 0
+        },
+        willRenderBoundaries: zoom < 6 && mapData.boundaries && mapData.boundaries.length > 0,
+        actualZoom: zoom,
+        zoomCheck: zoom < 6,
+        boundariesExist: !!mapData.boundaries,
+        boundariesLength: mapData.boundaries?.length
+      })
+
+      // Render country boundaries first (land masses for continent view)
+      if (zoom < 6 && mapData.boundaries && mapData.boundaries.length > 0) {
+        console.log('About to render', mapData.boundaries.length, 'boundaries')
+        ctx.fillStyle = '#f0ead6'  // Beige land color
+        ctx.strokeStyle = '#999999'  // Gray boundary
+        ctx.lineWidth = 1
+
+        let boundariesRendered = 0
+        mapData.boundaries.forEach((boundary: Boundary) => {
+          boundariesRendered++
+          if (boundariesRendered === 1) {
+            console.log('First boundary to render:', boundary.name, 'coords:', boundary.geometry.coordinates.length)
+          }
+          if (boundary.geometry && boundary.geometry.coordinates) {
+            // Start a single path for this entire boundary (all its rings)
+            ctx.beginPath()
+
+            // Each element in coordinates is a ring (array of [lon, lat] pairs)
+            boundary.geometry.coordinates.forEach((ring: number[][] | number[][][]) => {
+              const actualRing = ring as number[][]
+
+              if (actualRing && actualRing.length > 2) {
+                // Check for antimeridian crossing and split if needed
+                const segments: number[][][] = []
+                let currentSegment: number[][] = []
+
+                for (let i = 0; i < actualRing.length; i++) {
+                  const coord = actualRing[i]
+                  if (!coord || coord.length !== 2 || isNaN(coord[0]) || isNaN(coord[1])) continue
+
+                  if (i > 0) {
+                    const prevCoord = actualRing[i - 1]
+                    // Check for antimeridian crossing (longitude jump > 180 degrees)
+                    if (Math.abs(coord[0] - prevCoord[0]) > 180) {
+                      if (currentSegment.length > 0) {
+                        segments.push(currentSegment)
+                        currentSegment = []
+                      }
+                    }
+                  }
+                  currentSegment.push(coord)
+                }
+
+                if (currentSegment.length > 0) {
+                  segments.push(currentSegment)
+                }
+
+                // Add each segment to the same path (for proper hole handling)
+                segments.forEach((segment: number[][]) => {
+                  if (segment.length > 2) {
+                    segment.forEach((coord: number[], i: number) => {
+                      const point = map.latLngToContainerPoint([coord[1], coord[0]])
+                      if (i === 0) {
+                        ctx.moveTo(point.x, point.y)
+                      } else {
+                        ctx.lineTo(point.x, point.y)
+                      }
+                    })
+                    ctx.closePath()
+                  }
+                })
+              }
+            })
+
+            // Fill and stroke the entire boundary at once (handles holes correctly with evenodd rule)
+            ctx.fill('evenodd')
+            ctx.stroke()
+          }
+        })
+      }
 
       // Separate parks into background (large protected areas) and foreground (detailed features)
       const backgroundParks = mapData.parks?.filter((p: Park) =>
@@ -672,26 +1112,39 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       })
 
       // Render roads with different colors by type
-      mapData.roads.forEach((road: Road) => {
+      // Increase line width at lower zoom levels for visibility
+      const zoomMultiplier = zoom < 10 ? 2.5 : zoom < 12 ? 1.5 : 1
+
+      let roadsRendered = 0
+      mapData.roads.forEach((road: Road, idx: number) => {
         if (road.geometry && road.geometry.coordinates) {
+          roadsRendered++
+          if (idx === 0) {
+            // Log first road for debugging
+            console.log('First road:', {
+              type: road.type,
+              coordCount: road.geometry.coordinates.length,
+              firstCoord: road.geometry.coordinates[0]
+            })
+          }
           // Color roads by type (highway, residential, etc.)
           const type = road.type || 'default'
           switch(type) {
             case 'motorway':
               ctx.strokeStyle = '#e892a2'
-              ctx.lineWidth = 4
+              ctx.lineWidth = 4 * zoomMultiplier
               break
             case 'trunk':
               ctx.strokeStyle = '#f9b29c'
-              ctx.lineWidth = 3
+              ctx.lineWidth = 3 * zoomMultiplier
               break
             case 'primary':
               ctx.strokeStyle = '#fcd6a4'
-              ctx.lineWidth = 3
+              ctx.lineWidth = 3 * zoomMultiplier
               break
             case 'secondary':
               ctx.strokeStyle = '#f7fabf'
-              ctx.lineWidth = 2.5
+              ctx.lineWidth = 2.5 * zoomMultiplier
               break
             case 'residential':
               ctx.strokeStyle = '#ffffff'
@@ -712,6 +1165,8 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
           ctx.stroke()
         }
       })
+
+      console.log('Roads rendered:', roadsRendered)
 
       // Render buildings with subtle color variation
       ctx.lineWidth = 0.5
@@ -926,15 +1381,42 @@ const PRESET_PALETTES: Palette[] = [
 ]
 
 function App() {
+
   const [searchQuery, setSearchQuery] = useState('')
   const [suggestions, setSuggestions] = useState<SearchResult[]>([])
   const [selectedPosition, setSelectedPosition] = useState<[number, number] | null>(() => {
     const saved = localStorage.getItem('lastPosition')
-    return saved ? JSON.parse(saved) : null
+    if (saved) {
+      const pos = JSON.parse(saved)
+      // Validate position is reasonable (latitude between -90 and 90, longitude between -180 and 180)
+      if (Array.isArray(pos) && pos.length === 2 &&
+          pos[0] >= -90 && pos[0] <= 90 &&
+          pos[1] >= -180 && pos[1] <= 180) {
+        return pos as [number, number]
+      }
+    }
+    return null
   })
   const [selectedBounds, setSelectedBounds] = useState<[[number, number], [number, number]] | null>(() => {
     const saved = localStorage.getItem('lastBounds')
-    return saved ? JSON.parse(saved) : null
+    if (saved) {
+      const bounds = JSON.parse(saved)
+      // Validate bounds format and values
+      if (Array.isArray(bounds) && bounds.length === 2 &&
+          Array.isArray(bounds[0]) && bounds[0].length === 2 &&
+          Array.isArray(bounds[1]) && bounds[1].length === 2) {
+        const [[south, west], [north, east]] = bounds
+        // Check if bounds are reasonable
+        if (south >= -90 && south <= 90 && north >= -90 && north <= 90 &&
+            west >= -180 && west <= 180 && east >= -180 && east <= 180 &&
+            south < north && west < east) {
+          return bounds as [[number, number], [number, number]]
+        }
+      }
+      // Invalid bounds, clear it
+      localStorage.removeItem('lastBounds')
+    }
+    return null
   })
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
@@ -944,10 +1426,6 @@ function App() {
   const [showLabels, setShowLabels] = useState<boolean>(() => {
     const saved = localStorage.getItem('showLabels')
     return saved ? JSON.parse(saved) : true
-  })
-  const [useCustomRenderer, setUseCustomRenderer] = useState<boolean>(() => {
-    const saved = localStorage.getItem('useCustomRenderer')
-    return saved ? JSON.parse(saved) : false
   })
   const debounceTimer = useRef<NodeJS.Timeout | null>(null)
 
@@ -999,9 +1477,12 @@ function App() {
     const lon = parseFloat(result.lon)
     const position: [number, number] = [lat, lon]
 
+    console.log('Selected address:', result.display_name, 'boundingbox:', result.boundingbox)
+
     // If result has a bounding box, use it to fit the view
     if (result.boundingbox && result.boundingbox.length === 4) {
       const [south, north, west, east] = result.boundingbox.map(parseFloat)
+      console.log('Parsed bounds:', { south, north, west, east })
       const bounds: [[number, number], [number, number]] = [[south, west], [north, east]]
 
       setSelectedBounds(bounds)
@@ -1061,10 +1542,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem('showLabels', JSON.stringify(showLabels))
   }, [showLabels])
-
-  useEffect(() => {
-    localStorage.setItem('useCustomRenderer', JSON.stringify(useCustomRenderer))
-  }, [useCustomRenderer])
 
   const filterStyle = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%) hue-rotate(${filters.hueRotate}deg) grayscale(${filters.grayscale}%)`
 
@@ -1187,18 +1664,6 @@ function App() {
                 Show Labels
               </label>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <input
-                type="checkbox"
-                id="useCustomRenderer"
-                checked={useCustomRenderer}
-                onChange={(e) => setUseCustomRenderer(e.target.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              <label htmlFor="useCustomRenderer" style={{ color: '#000', fontSize: '12px', cursor: 'pointer' }}>
-                Custom Renderer (Beta)
-              </label>
-            </div>
             <div>
               <label style={{ color: '#000', fontSize: '12px' }}>Brightness: {filters.brightness}%</label>
               <input
@@ -1296,15 +1761,7 @@ function App() {
           style={{ height: '100%', width: '100%' }}
         >
           <MapController position={selectedPosition} zoom={15} bounds={selectedBounds} />
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url={showLabels
-              ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              : "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
-            }
-            opacity={useCustomRenderer ? 0 : 1}
-          />
-          {useCustomRenderer && <CanvasRenderer showLabels={showLabels} filters={filters} />}
+          <CanvasRenderer showLabels={showLabels} filters={filters} />
           {selectedPosition && (
             <Marker position={selectedPosition}>
               <Popup>
