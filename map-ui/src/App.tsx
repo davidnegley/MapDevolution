@@ -292,6 +292,7 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
   const fetchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const rateLimitedUntil = useRef<number>(0)
   const lastBboxRef = useRef<string>('')
+  const queryCounterRef = useRef<number>(0)
 
   useEffect(() => {
     // Debounced fetch to avoid too many API calls during zoom/pan
@@ -466,9 +467,13 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
             .filter((b: Boundary) => b.geometry.coordinates.length > 0 && b.geometry.coordinates[0] && b.geometry.coordinates[0].length > 0)
 
           console.log('Fetched boundaries:', boundaries.length, 'Setting mapData')
-          setMapData({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries })
-          console.log('setMapData called with', boundaries.length, 'boundaries')
-          lastBboxRef.current = 'world-wrap-boundaries' // Mark as fetched to prevent refetch
+
+          // Only update if this is still the most recent query
+          if (currentQueryId === queryCounterRef.current) {
+            setMapData({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries })
+            console.log('setMapData called with', boundaries.length, 'boundaries')
+            lastBboxRef.current = 'world-wrap-boundaries' // Mark as fetched to prevent refetch
+          }
         } catch (error) {
           console.error('Error fetching boundaries:', error)
           // Don't clear existing data on error - keep what we have
@@ -510,8 +515,12 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
           const boundaries: Boundary[] = await response.json()
 
           console.log('Loaded', boundaries.length, 'country boundaries from backend')
-          setMapData({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries })
-          lastBboxRef.current = cacheKey
+
+          // Only update if this is still the most recent query
+          if (currentQueryId === queryCounterRef.current) {
+            setMapData({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries })
+            lastBboxRef.current = cacheKey
+          }
           setIsLoading(false)
           return
         } catch (error) {
@@ -562,6 +571,13 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         return
       }
 
+      // Mark this bbox as being fetched to prevent overlapping queries
+      lastBboxRef.current = bbox
+
+      // Increment query counter to track this specific query
+      queryCounterRef.current += 1
+      const currentQueryId = queryCounterRef.current
+
       // Check if we're rate limited
       const now = Date.now()
       if (now < rateLimitedUntil.current) {
@@ -586,8 +602,9 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
 
         // Only use cache if it has actual data (not empty from a failed fetch)
         if (hasData) {
-          setMapData(cached)
-          lastBboxRef.current = bbox
+          if (currentQueryId === queryCounterRef.current) {
+            setMapData(cached)
+          }
           return
         } else {
           console.log('Cached data is empty, fetching fresh data...')
@@ -602,11 +619,14 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
 
       try {
         // Don't query boundaries/coastlines if bbox is too large (will timeout)
-        // At very low zoom (< 6), allow larger bbox for country boundaries (up to 100°)
+        // At very low zoom (< 6), allow very large bbox for country boundaries (up to 100°)
+        // At low-medium zoom (6-8), allow medium bbox for state boundaries (up to 60°)
         // At higher zoom, be more conservative to avoid timeouts
         const bboxIsTooLarge = approximateZoom < 6
-          ? (latSpan > 100 || lonSpan > 100)  // Continent scale
-          : (latSpan > 5 || lonSpan > 5)      // Regional scale
+          ? (latSpan > 100 || lonSpan > 100)  // World/continent scale
+          : approximateZoom < 9
+          ? (latSpan > 60 || lonSpan > 60)    // Large region scale (e.g., Hawaii, Alaska)
+          : (latSpan > 5 || lonSpan > 5)      // State/regional scale
 
         // Helper function to build query parts for a single bbox
         const buildQueryPartsForBbox = (singleBbox: string) => {
@@ -980,11 +1000,15 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
           waterTypes: [...new Set(water.map((w: Water) => w.type))]
         })
 
-        setMapData(mapData)
-        lastBboxRef.current = bbox
+        // Only update state if this is still the most recent query
+        if (currentQueryId === queryCounterRef.current) {
+          setMapData(mapData)
 
-        // Cache the result
-        await setCachedData(bbox, mapData)
+          // Cache the result
+          await setCachedData(bbox, mapData)
+        } else {
+          console.log('Ignoring stale query response for bbox:', bbox)
+        }
       } catch (error) {
         console.error('Error fetching map data:', error)
       } finally {
@@ -1124,15 +1148,22 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
                 // Add each segment to the same path (for proper hole handling)
                 segments.forEach((segment: number[][]) => {
                   if (segment.length > 2) {
+                    let firstPoint: { coord: number[], point: L.Point, canvasSize: { width: number, height: number } } | null = null
                     segment.forEach((coord: number[], i: number) => {
                       const point = map.latLngToContainerPoint([coord[1], coord[0]])
                       if (i === 0) {
+                        firstPoint = { coord, point, canvasSize: { width: canvas.width, height: canvas.height } }
                         ctx.moveTo(point.x, point.y)
                       } else {
                         ctx.lineTo(point.x, point.y)
                       }
                     })
                     ctx.closePath()
+
+                    // Log first point of first segment for debugging
+                    if (boundariesRendered === 1 && firstPoint) {
+                      console.log('First boundary first point:', firstPoint)
+                    }
                   }
                 })
               }
