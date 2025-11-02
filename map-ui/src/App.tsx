@@ -310,9 +310,28 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       while (east < -180) east += 360
       while (east > 180) east -= 360
 
+      // Fix negative longitude span (crossing dateline)
+      let lonSpan = east - west
+      if (lonSpan < 0) {
+        lonSpan += 360  // Crossing dateline: -170 to 170 = 340° not -340°
+      }
+
+      // Skip if bbox is invalid (east < west but not crossing dateline properly)
+      if (west > east && lonSpan > 180) {
+        console.warn('Invalid bbox detected (likely world wrap issue):', { south, west, north, east, lonSpan })
+        setIsLoading(false)
+        return
+      }
+
+      // Handle dateline crossing: split into two bboxes
+      const crossesDateline = west > east
+      const bboxes = crossesDateline
+        ? [`${south},${west},${north},180`, `${south},-180,${north},${east}`]
+        : [`${south},${west},${north},${east}`]
+      const bbox = bboxes[0] // For logging and single bbox operations
+
       // If bbox spans more than 360 degrees (world wrap), fetch only country boundaries
-      const lonSpan = east - west
-      if (Math.abs(lonSpan) > 180) {
+      if (Math.abs(lonSpan) > 360) {
         // Check if we already fetched world boundaries
         if (lastBboxRef.current === 'world-wrap-boundaries') {
           console.log('World boundaries already fetched, skipping')
@@ -337,6 +356,7 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
             elements: OSMElement[]
           }
 
+          // For world-wrap views, only fetch boundaries (coastline query would be too large)
           const query = `
             [out:json][timeout:25];
             (
@@ -445,7 +465,7 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
             })
             .filter((b: Boundary) => b.geometry.coordinates.length > 0 && b.geometry.coordinates[0] && b.geometry.coordinates[0].length > 0)
 
-          console.log('Fetched boundaries:', boundaries.length, 'Setting mapData with boundaries')
+          console.log('Fetched boundaries:', boundaries.length, 'Setting mapData')
           setMapData({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries })
           console.log('setMapData called with', boundaries.length, 'boundaries')
           lastBboxRef.current = 'world-wrap-boundaries' // Mark as fetched to prevent refetch
@@ -456,10 +476,50 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         return
       }
 
-      const bbox = `${south},${west},${north},${east}`
       const latSpan = north - south
 
       console.log('Map bounds:', { south, west, north, east, latSpan, lonSpan })
+
+      // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
+      // use a minimal query with only country boundaries to avoid timeouts
+      if (lonSpan > 200 || latSpan > 60) {
+        console.warn('Bbox very large:', { latSpan, lonSpan }, 'Using minimal boundary-only query')
+
+        // Skip if we just did this query
+        const cacheKey = `large-bbox-${Math.round(south)}-${Math.round(west)}-${Math.round(north)}-${Math.round(east)}`
+        if (lastBboxRef.current === cacheKey) {
+          console.log('Large area boundaries already fetched, skipping')
+          setIsLoading(false)
+          return
+        }
+
+        setIsLoading(true)
+
+        try {
+          // Fetch pre-processed country boundaries from backend API
+          console.log('Fetching country boundaries from backend API...')
+
+          const response = await fetch('http://localhost:5257/api/boundaries/countries')
+
+          if (!response.ok) {
+            console.warn('Backend API failed:', response.status, '- falling back to Overpass')
+            setIsLoading(false)
+            return
+          }
+
+          const boundaries: Boundary[] = await response.json()
+
+          console.log('Loaded', boundaries.length, 'country boundaries from backend')
+          setMapData({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries })
+          lastBboxRef.current = cacheKey
+          setIsLoading(false)
+          return
+        } catch (error) {
+          console.error('Error fetching boundaries from backend:', error)
+          setIsLoading(false)
+          return
+        }
+      }
 
       // Use actual map zoom instead of calculated zoom
       // This ensures query decisions match what the user sees
@@ -488,7 +548,14 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       // Limit expanded bbox to max ~0.5 degrees (to avoid Overpass API rejecting query)
       const maxExpandLat = Math.min(latExpand, 0.5)
       const maxExpandLon = Math.min(lonExpand, 0.5)
-      const expandedBbox = `${south - maxExpandLat},${west - maxExpandLon},${north + maxExpandLat},${east + maxExpandLon}`
+
+      // For expanded bbox with dateline crossing, also split into two
+      const expandedBboxes = crossesDateline
+        ? [
+            `${south - maxExpandLat},${west - maxExpandLon},${north + maxExpandLat},180`,
+            `${south - maxExpandLat},-180,${north + maxExpandLat},${east + maxExpandLon}`
+          ]
+        : [`${south - maxExpandLat},${west - maxExpandLon},${north + maxExpandLat},${east + maxExpandLon}`]
 
       // Skip if same bbox
       if (bbox === lastBboxRef.current) {
@@ -534,96 +601,119 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       setIsLoading(true)
 
       try {
-        // Build query dynamically based on zoom level
-        const queryParts: string[] = []
-
         // Don't query boundaries/coastlines if bbox is too large (will timeout)
-        const bboxIsTooLarge = latSpan > 5 || lonSpan > 5
+        // At very low zoom (< 6), allow larger bbox for country boundaries (up to 100°)
+        // At higher zoom, be more conservative to avoid timeouts
+        const bboxIsTooLarge = approximateZoom < 6
+          ? (latSpan > 100 || lonSpan > 100)  // Continent scale
+          : (latSpan > 5 || lonSpan > 5)      // Regional scale
 
-        // At zoom < 11, fetch minimal data to keep query fast
-        // At zoom >= 11, fetch all features for custom rendering
-        if (approximateZoom < 11) {
-          // Minimal query for low zoom - major roads, water, and coastlines
-          queryParts.push(`way["highway"~"motorway|trunk"](${bbox});`)
-          queryParts.push(`way["waterway"](${bbox});`)
-          queryParts.push(`way["natural"="water"](${bbox});`)
-          if (!bboxIsTooLarge) {
-            queryParts.push(`way["natural"="coastline"](${bbox});`)
-            // Also fetch state boundaries to draw land area
-            queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4"](${bbox});`)
-          }
-        } else {
-          // Full query for high zoom - all features
-          // Roads
-          if (skipMinorRoads) {
-            queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${bbox});`)
+        // Helper function to build query parts for a single bbox
+        const buildQueryPartsForBbox = (singleBbox: string) => {
+          const queryParts: string[] = []
+
+          // At zoom < 11, fetch minimal data to keep query fast
+          // At zoom >= 11, fetch all features for custom rendering
+          if (approximateZoom < 11) {
+            // Minimal query for low zoom - major roads, water, and coastlines
+            queryParts.push(`way["highway"~"motorway|trunk"](${singleBbox});`)
+            queryParts.push(`way["waterway"](${singleBbox});`)
+            queryParts.push(`way["natural"="water"](${singleBbox});`)
+            // Only fetch coastlines for reasonably sized bboxes
+            if (!bboxIsTooLarge && latSpan < 20 && lonSpan < 100) {
+              queryParts.push(`way["natural"="coastline"](${singleBbox});`)
+            }
+            // Only fetch boundaries if not too large
+            if (!bboxIsTooLarge && latSpan < 50 && lonSpan < 100) {
+              // Also fetch state boundaries to draw land area
+              queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4"](${singleBbox});`)
+            }
           } else {
-            queryParts.push(`way["highway"](${bbox});`)
+            // Full query for high zoom - all features
+            // Roads
+            if (skipMinorRoads) {
+              queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${singleBbox});`)
+            } else {
+              queryParts.push(`way["highway"](${singleBbox});`)
+            }
+
+            // Buildings only at high zoom
+            if (!skipBuildings) {
+              queryParts.push(`way["building"](${singleBbox});`)
+            }
+
+            // Water features
+            queryParts.push(`way["waterway"](${singleBbox});`)
+            queryParts.push(`way["natural"="water"](${singleBbox});`)
+
+            // Parks and natural features
+            queryParts.push(`way["leisure"="park"](${singleBbox});`)
+            queryParts.push(`way["leisure"="nature_reserve"](${singleBbox});`)
+            queryParts.push(`way["boundary"="national_park"](${singleBbox});`)
+            queryParts.push(`way["boundary"="protected_area"](${singleBbox});`)
+            queryParts.push(`way["landuse"="forest"](${singleBbox});`)
+            queryParts.push(`way["landuse"="grass"](${singleBbox});`)
+            queryParts.push(`way["landuse"="meadow"](${singleBbox});`)
+            queryParts.push(`way["landuse"="wetland"](${singleBbox});`)
+            queryParts.push(`way["natural"="wood"](${singleBbox});`)
+            queryParts.push(`way["natural"="wetland"](${singleBbox});`)
+            queryParts.push(`way["natural"="marsh"](${singleBbox});`)
+            queryParts.push(`way["natural"="swamp"](${singleBbox});`)
+
+            // Labels
+            queryParts.push(`node["name"](${singleBbox});`)
           }
 
-          // Buildings only at high zoom
-          if (!skipBuildings) {
-            queryParts.push(`way["building"](${bbox});`)
+          // Fetch coastlines at zoom < 10, but only if bbox is reasonable size
+          // Very large bboxes (> 20° span) will timeout the API
+          if (approximateZoom < 10 && latSpan < 20 && lonSpan < 20) {
+            queryParts.push(`way["natural"="coastline"](${singleBbox});`)
           }
 
-          // Water features
-          queryParts.push(`way["waterway"](${bbox});`)
-          queryParts.push(`way["natural"="water"](${bbox});`)
+          // Country boundaries for continent-scale views (zoom < 6)
+          // State/province boundaries for regional views (zoom 6-9)
+          if (approximateZoom < 6 && !bboxIsTooLarge) {
+            queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${singleBbox});`)
+          } else if (approximateZoom >= 6 && approximateZoom < 9 && !bboxIsTooLarge) {
+            // Fetch state/province boundaries (admin_level 4 in US, sometimes 4-6 elsewhere)
+            queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${singleBbox});`)
+          }
 
-          // Parks and natural features
-          queryParts.push(`way["leisure"="park"](${bbox});`)
-          queryParts.push(`way["leisure"="nature_reserve"](${bbox});`)
-          queryParts.push(`way["boundary"="national_park"](${bbox});`)
-          queryParts.push(`way["boundary"="protected_area"](${bbox});`)
-          queryParts.push(`way["landuse"="forest"](${bbox});`)
-          queryParts.push(`way["landuse"="grass"](${bbox});`)
-          queryParts.push(`way["landuse"="meadow"](${bbox});`)
-          queryParts.push(`way["landuse"="wetland"](${bbox});`)
-          queryParts.push(`way["natural"="wood"](${bbox});`)
-          queryParts.push(`way["natural"="wetland"](${bbox});`)
-          queryParts.push(`way["natural"="marsh"](${bbox});`)
-          queryParts.push(`way["natural"="swamp"](${bbox});`)
+          // For medium zoom (9-11), also fetch state/county boundaries to show land areas
+          if (approximateZoom >= 9 && approximateZoom < 11 && !bboxIsTooLarge) {
+            queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${singleBbox});`)
+          }
 
-          // Labels
-          queryParts.push(`node["name"](${bbox});`)
+          return queryParts
         }
+
+        // Build query parts for all bboxes (handles dateline crossing)
+        const allQueryParts = bboxes.flatMap(buildQueryPartsForBbox)
 
         if (bboxIsTooLarge) {
           console.log('Bbox too large for boundary/coastline queries:', { latSpan, lonSpan })
         }
 
-        // Country boundaries for continent-scale views (zoom < 6)
-        // State/province boundaries for regional views (zoom 6-9)
-        if (approximateZoom < 6 && !bboxIsTooLarge) {
-          queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${bbox});`)
-        } else if (approximateZoom >= 6 && approximateZoom < 9 && !bboxIsTooLarge) {
-          // Fetch state/province boundaries (admin_level 4 in US, sometimes 4-6 elsewhere)
-          queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${bbox});`)
-        }
-
-        // Coastlines - always show at low zoom (under 10), but only if bbox isn't huge
-        if (approximateZoom < 10 && !bboxIsTooLarge) {
-          queryParts.push(`way["natural"="coastline"](${bbox});`)
-        }
-
-        // For medium zoom (9-11), also fetch state/county boundaries to show land areas
-        if (approximateZoom >= 9 && approximateZoom < 11 && !bboxIsTooLarge) {
-          queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${bbox});`)
-        }
-
-        const wayQuery = queryParts.length > 0 ? queryParts.join('\n            ') : ''
+        const wayQuery = allQueryParts.length > 0 ? allQueryParts.join('\n            ') : ''
 
         // Relation queries (for large protected areas) - skip at very low zoom
-        const relationQuery = !skipRelations && !onlyMajorFeatures ? `
+        // Generate relation queries for all expanded bboxes
+        const relationQueryParts = !skipRelations && !onlyMajorFeatures
+          ? expandedBboxes.flatMap(expBbox => [
+              `rel(${expBbox})["natural"="water"];`,
+              `rel(${expBbox})["leisure"="nature_reserve"];`,
+              `rel(${expBbox})["boundary"="national_park"];`,
+              `rel(${expBbox})["boundary"="protected_area"];`,
+              `rel(${expBbox})["landuse"="wetland"];`,
+              `rel(${expBbox})["natural"="wetland"];`,
+              `rel(${expBbox})["natural"="marsh"];`,
+              `rel(${expBbox})["natural"="swamp"];`
+            ])
+          : []
+
+        const relationQuery = relationQueryParts.length > 0 ? `
           (
-            rel(${expandedBbox})["natural"="water"];
-            rel(${expandedBbox})["leisure"="nature_reserve"];
-            rel(${expandedBbox})["boundary"="national_park"];
-            rel(${expandedBbox})["boundary"="protected_area"];
-            rel(${expandedBbox})["landuse"="wetland"];
-            rel(${expandedBbox})["natural"="wetland"];
-            rel(${expandedBbox})["natural"="marsh"];
-            rel(${expandedBbox})["natural"="swamp"];
+            ${relationQueryParts.join('\n            ')}
           );
           out geom(${bbox});
         ` : ''
@@ -637,7 +727,7 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
           ${relationQuery}
         `
 
-        console.log('Query for zoom', approximateZoom.toFixed(1), 'Query parts:', queryParts.length)
+        console.log('Query for zoom', approximateZoom.toFixed(1), 'Query parts:', allQueryParts.length)
         console.log('Full query:', query)
 
         const response = await fetch('https://overpass-api.de/api/interpreter', {
@@ -947,9 +1037,13 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
       const hasBoundaries = (mapData.boundaries?.length || 0) > 0
 
       // Always paint background for artistic custom rendering
-      if (zoom < 10) {
-        if (hasBoundaries) {
-          ctx.fillStyle = '#b3d9ff'  // Light ocean blue (boundaries will show land)
+      if (zoom < 6) {
+        // At very low zoom (continent/world scale), default to ocean blue
+        // Boundaries will paint land on top
+        ctx.fillStyle = '#b3d9ff'  // Light ocean blue
+      } else if (zoom < 10) {
+        if (hasBoundaries || hasCoastlines) {
+          ctx.fillStyle = '#b3d9ff'  // Light ocean blue (boundaries/coastlines will show land)
         } else {
           ctx.fillStyle = '#f0ead6'  // Beige land color (no boundaries = probably inland)
         }
