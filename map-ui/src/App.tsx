@@ -168,7 +168,8 @@ const setCachedData = async (bbox: string, data: MapData): Promise<void> => {
 }
 
 // Custom Canvas Renderer Component
-function CustomCanvasLayer({ map, mapData, showLabels, filters }: { map: L.Map, mapData: MapData, showLabels: boolean, filters: MapFilters }) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function CustomCanvasLayer({ map, mapData, showLabels, filters: _filters }: { map: L.Map, mapData: MapData, showLabels: boolean, filters: MapFilters }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
@@ -275,7 +276,7 @@ function CustomCanvasLayer({ map, mapData, showLabels, filters }: { map: L.Map, 
   return <canvas ref={canvasRef} style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }} />
 }
 
-function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters: MapFilters }) {
+function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean, filters: MapFilters }) {
   const map = useMap()
   const [mapData, setMapData] = useState<MapData>({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries: [] })
   const [isLoading, setIsLoading] = useState(false)
