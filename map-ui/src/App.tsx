@@ -461,9 +461,13 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
 
       console.log('Map bounds:', { south, west, north, east, latSpan, lonSpan })
 
-      // Calculate zoom level from lat span (rough approximation)
+      // Use actual map zoom instead of calculated zoom
+      // This ensures query decisions match what the user sees
+      const actualZoom = map.getZoom()
+
+      // Calculate zoom level from lat span (rough approximation) as fallback
       // At equator: zoom ~= log2(360 / latSpan)
-      const approximateZoom = Math.log2(180 / latSpan)
+      const approximateZoom = actualZoom || Math.log2(180 / latSpan)
 
       // Skip relation queries when zoomed out too far (bbox > 1 degree)
       const skipRelations = latSpan > 1 || lonSpan > 1
@@ -498,9 +502,9 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         return
       }
 
-      // Check cache first
+      // Check cache first (but skip cache for debugging boundary issues)
       const cached = await getCachedData(bbox)
-      if (cached) {
+      if (cached && approximateZoom >= 10) {  // Only use cache for high zoom levels
         const hasData = (cached.roads?.length || 0) > 0 ||
                         (cached.parks?.length || 0) > 0 ||
                         (cached.water?.length || 0) > 0
@@ -521,6 +525,8 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         } else {
           console.log('Cached data is empty, fetching fresh data...')
         }
+      } else if (cached) {
+        console.log('Skipping cache for low zoom (< 10) to fetch boundaries')
       }
 
       console.log('Fetching map data for bbox:', bbox, 'zoom level:', approximateZoom.toFixed(1))
@@ -531,49 +537,78 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         // Build query dynamically based on zoom level
         const queryParts: string[] = []
 
-        // Roads - always show at least major highways
-        if (onlyMajorFeatures) {
-          // At very low zoom, only show interstates and major highways
+        // Don't query boundaries/coastlines if bbox is too large (will timeout)
+        const bboxIsTooLarge = latSpan > 5 || lonSpan > 5
+
+        // At zoom < 11, fetch minimal data to keep query fast
+        // At zoom >= 11, fetch all features for custom rendering
+        if (approximateZoom < 11) {
+          // Minimal query for low zoom - major roads, water, and coastlines
           queryParts.push(`way["highway"~"motorway|trunk"](${bbox});`)
-        } else if (skipMinorRoads) {
-          // At medium zoom, show major roads
-          queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${bbox});`)
+          queryParts.push(`way["waterway"](${bbox});`)
+          queryParts.push(`way["natural"="water"](${bbox});`)
+          if (!bboxIsTooLarge) {
+            queryParts.push(`way["natural"="coastline"](${bbox});`)
+            // Also fetch state boundaries to draw land area
+            queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4"](${bbox});`)
+          }
         } else {
-          // At high zoom, show all roads
-          queryParts.push(`way["highway"](${bbox});`)
-        }
+          // Full query for high zoom - all features
+          // Roads
+          if (skipMinorRoads) {
+            queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${bbox});`)
+          } else {
+            queryParts.push(`way["highway"](${bbox});`)
+          }
 
-        // Buildings only at high zoom
-        if (!skipBuildings && !onlyMajorFeatures) {
-          queryParts.push(`way["building"](${bbox});`)
-        }
+          // Buildings only at high zoom
+          if (!skipBuildings) {
+            queryParts.push(`way["building"](${bbox});`)
+          }
 
-        // Water features - always show
-        queryParts.push(`way["waterway"](${bbox});`)
-        queryParts.push(`way["natural"="water"](${bbox});`)
+          // Water features
+          queryParts.push(`way["waterway"](${bbox});`)
+          queryParts.push(`way["natural"="water"](${bbox});`)
 
-        // Parks and natural features - always show (visible at all zoom levels)
-        queryParts.push(`way["leisure"="park"](${bbox});`)
-        queryParts.push(`way["leisure"="nature_reserve"](${bbox});`)
-        queryParts.push(`way["boundary"="national_park"](${bbox});`)
-        queryParts.push(`way["boundary"="protected_area"](${bbox});`)
-        queryParts.push(`way["landuse"="forest"](${bbox});`)
-        queryParts.push(`way["landuse"="grass"](${bbox});`)
-        queryParts.push(`way["landuse"="meadow"](${bbox});`)
-        queryParts.push(`way["landuse"="wetland"](${bbox});`)
-        queryParts.push(`way["natural"="wood"](${bbox});`)
-        queryParts.push(`way["natural"="wetland"](${bbox});`)
-        queryParts.push(`way["natural"="marsh"](${bbox});`)
-        queryParts.push(`way["natural"="swamp"](${bbox});`)
+          // Parks and natural features
+          queryParts.push(`way["leisure"="park"](${bbox});`)
+          queryParts.push(`way["leisure"="nature_reserve"](${bbox});`)
+          queryParts.push(`way["boundary"="national_park"](${bbox});`)
+          queryParts.push(`way["boundary"="protected_area"](${bbox});`)
+          queryParts.push(`way["landuse"="forest"](${bbox});`)
+          queryParts.push(`way["landuse"="grass"](${bbox});`)
+          queryParts.push(`way["landuse"="meadow"](${bbox});`)
+          queryParts.push(`way["landuse"="wetland"](${bbox});`)
+          queryParts.push(`way["natural"="wood"](${bbox});`)
+          queryParts.push(`way["natural"="wetland"](${bbox});`)
+          queryParts.push(`way["natural"="marsh"](${bbox});`)
+          queryParts.push(`way["natural"="swamp"](${bbox});`)
 
-        // Labels only at medium/high zoom
-        if (!onlyMajorFeatures) {
+          // Labels
           queryParts.push(`node["name"](${bbox});`)
         }
 
+        if (bboxIsTooLarge) {
+          console.log('Bbox too large for boundary/coastline queries:', { latSpan, lonSpan })
+        }
+
         // Country boundaries for continent-scale views (zoom < 6)
-        if (approximateZoom < 6) {
+        // State/province boundaries for regional views (zoom 6-9)
+        if (approximateZoom < 6 && !bboxIsTooLarge) {
           queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${bbox});`)
+        } else if (approximateZoom >= 6 && approximateZoom < 9 && !bboxIsTooLarge) {
+          // Fetch state/province boundaries (admin_level 4 in US, sometimes 4-6 elsewhere)
+          queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${bbox});`)
+        }
+
+        // Coastlines - always show at low zoom (under 10), but only if bbox isn't huge
+        if (approximateZoom < 10 && !bboxIsTooLarge) {
+          queryParts.push(`way["natural"="coastline"](${bbox});`)
+        }
+
+        // For medium zoom (9-11), also fetch state/county boundaries to show land areas
+        if (approximateZoom >= 9 && approximateZoom < 11 && !bboxIsTooLarge) {
+          queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${bbox});`)
         }
 
         const wayQuery = queryParts.length > 0 ? queryParts.join('\n            ') : ''
@@ -601,6 +636,9 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
           out geom;
           ${relationQuery}
         `
+
+        console.log('Query for zoom', approximateZoom.toFixed(1), 'Query parts:', queryParts.length)
+        console.log('Full query:', query)
 
         const response = await fetch('https://overpass-api.de/api/interpreter', {
           method: 'POST',
@@ -651,6 +689,13 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
 
         const data: OSMResponse = await response.json()
 
+        console.log('Raw API response:', {
+          totalElements: data.elements.length,
+          elementTypes: [...new Set(data.elements.map(el => el.type))],
+          adminLevels: [...new Set(data.elements.filter(el => el.tags?.admin_level).map(el => el.tags?.admin_level))],
+          coastlines: data.elements.filter(el => el.tags?.natural === 'coastline').length
+        })
+
         // Calculate simplification tolerance based on zoom level
         // Higher tolerance (more simplification) at lower zoom levels
         const simplificationTolerance = approximateZoom < 10 ? 0.001 : approximateZoom < 13 ? 0.0001 : 0
@@ -681,9 +726,9 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
           .filter(b => b.geometry.coordinates[0].length > 0)
 
         const water: Water[] = data.elements
-          .filter((el) => (el.tags?.waterway || el.tags?.natural === 'water') && (el.geometry || el.members))
+          .filter((el) => (el.tags?.waterway || el.tags?.natural === 'water' || el.tags?.natural === 'coastline') && (el.geometry || el.members))
           .map((el) => ({
-            type: el.tags?.waterway || 'water',
+            type: el.tags?.waterway || el.tags?.natural || 'water',
             geometry: {
               coordinates: el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) ||
                           (el.members ? el.members.flatMap(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []) : [])
@@ -742,9 +787,11 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
             name: el.tags.name
           }))
 
-        // Parse boundaries (countries, coastlines) for continent-scale views
+        // Parse boundaries (countries, states, provinces)
         const boundaries: Boundary[] = data.elements
-          .filter((el) => el.tags?.boundary === 'administrative' && (el.tags?.admin_level === '2' || el.tags?.admin_level === '4'))
+          .filter((el) => el.tags?.boundary === 'administrative' &&
+                         (el.tags?.admin_level === '2' || el.tags?.admin_level === '4' ||
+                          el.tags?.admin_level === '5' || el.tags?.admin_level === '6'))
           .map((el) => {
             // For relations with members, need to handle connected vs disconnected ways
             const coords = el.type === 'relation' && el.members
@@ -895,14 +942,24 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
                       (mapData.water?.length || 0) > 0 ||
                       (mapData.boundaries?.length || 0) > 0
 
-      // At very low zoom (< 6), show ocean background (land will be drawn on top)
-      // Otherwise show white background for land
-      if (zoom < 6) {
+      // Determine background based on what data we have
+      const hasCoastlines = mapData.water?.some((w: Water) => w.type === 'coastline') || false
+      const hasBoundaries = (mapData.boundaries?.length || 0) > 0
+
+      // Always paint background for artistic custom rendering
+      if (zoom < 10) {
+        if (hasBoundaries) {
+          ctx.fillStyle = '#b3d9ff'  // Light ocean blue (boundaries will show land)
+        } else {
+          ctx.fillStyle = '#f0ead6'  // Beige land color (no boundaries = probably inland)
+        }
+      } else if (hasCoastlines) {
+        // When coastlines are present, show ocean background
         ctx.fillStyle = '#b3d9ff'  // Light ocean blue
       } else if (hasData) {
         ctx.fillStyle = '#ffffff'  // White land
       } else {
-        ctx.fillStyle = '#b3d9ff'  // Light ocean blue (no data)
+        ctx.fillStyle = '#f5f5f5'  // Light gray (no data at high zoom)
       }
       ctx.fillRect(0, 0, canvas.width, canvas.height)
 
@@ -923,12 +980,12 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         boundariesLength: mapData.boundaries?.length
       })
 
-      // Render country boundaries first (land masses for continent view)
-      if (zoom < 6 && mapData.boundaries && mapData.boundaries.length > 0) {
+      // Render boundaries (countries at zoom < 6, states at zoom 6-11)
+      if (zoom < 11 && mapData.boundaries && mapData.boundaries.length > 0) {
         console.log('About to render', mapData.boundaries.length, 'boundaries')
         ctx.fillStyle = '#f0ead6'  // Beige land color
         ctx.strokeStyle = '#999999'  // Gray boundary
-        ctx.lineWidth = 1
+        ctx.lineWidth = 2
 
         let boundariesRendered = 0
         mapData.boundaries.forEach((boundary: Boundary) => {
@@ -1076,7 +1133,21 @@ function CanvasRenderer({ showLabels, filters }: { showLabels: boolean, filters:
         if (water.geometry && water.geometry.coordinates && water.geometry.coordinates.length > 0) {
           const type = water.type || 'water'
 
-          if (type === 'river' || type === 'stream' || type === 'canal') {
+          if (type === 'coastline') {
+            // Render coastline as simple line
+            ctx.strokeStyle = '#70b8ff'  // Blue line
+            ctx.lineWidth = 2
+            ctx.beginPath()
+            water.geometry.coordinates.forEach((coord: number[] | number[][], i: number) => {
+              const c = coord as number[]
+              if (c && c.length === 2) {
+                const point = map.latLngToContainerPoint([c[1], c[0]])
+                if (i === 0) ctx.moveTo(point.x, point.y)
+                else ctx.lineTo(point.x, point.y)
+              }
+            })
+            ctx.stroke()
+          } else if (type === 'river' || type === 'stream' || type === 'canal') {
             // Render as line (waterway)
             ctx.strokeStyle = '#70b8ff'  // Darker blue for visibility
             ctx.lineWidth = type === 'river' ? 3 : type === 'canal' ? 2 : 1.5
@@ -1310,16 +1381,38 @@ function MapController({ position, zoom, bounds }: { position: [number, number] 
       const latSpan = north - south
       const lonSpan = east - west
 
-      // For very large areas (states, countries), set a minimum zoom to keep detail
-      const minZoom = (latSpan > 2 || lonSpan > 2) ? 7 : undefined
+      console.log('Fitting bounds:', { bounds, latSpan, lonSpan })
 
-      map.fitBounds(bounds, {
-        padding: [50, 50],
-        animate: true,
-        duration: 1.5,
-        maxZoom: 15,
-        ...(minZoom && { minZoom })
-      })
+      // For state-sized areas (2-5° span), just center and zoom to a fixed level
+      // This avoids Leaflet zooming out too far to fit bounds
+      if ((latSpan > 2 || lonSpan > 2) && latSpan < 5 && lonSpan < 5) {
+        const centerLat = (south + north) / 2
+        const centerLon = (west + east) / 2
+        console.log('Using fixed zoom 10 for state-sized area')
+        map.setView([centerLat, centerLon], 10, { animate: true })
+      } else {
+        // For very large areas (continents), set a minimum zoom
+        // For smaller areas, let fitBounds work naturally
+        let minZoom: number | undefined = undefined
+        if (latSpan > 10 || lonSpan > 10) {
+          minZoom = 3  // Continents
+        } else if (latSpan > 0.5 || lonSpan > 0.5) {
+          minZoom = 10  // Cities/small regions
+        }
+
+        map.fitBounds(bounds, {
+          padding: [50, 50],
+          animate: true,
+          duration: 1.5,
+          maxZoom: 15,
+          ...(minZoom && { minZoom })
+        })
+      }
+
+      // Log the actual zoom level after fitting
+      setTimeout(() => {
+        console.log('Zoom level after fitBounds:', map.getZoom())
+      }, 100)
     } else if (position) {
       map.flyTo(position, zoom, { duration: 1.5 })
     }
@@ -1400,20 +1493,25 @@ function App() {
   const [selectedBounds, setSelectedBounds] = useState<[[number, number], [number, number]] | null>(() => {
     const saved = localStorage.getItem('lastBounds')
     if (saved) {
+      console.log('Loading bounds from localStorage:', saved)
       const bounds = JSON.parse(saved)
       // Validate bounds format and values
       if (Array.isArray(bounds) && bounds.length === 2 &&
           Array.isArray(bounds[0]) && bounds[0].length === 2 &&
           Array.isArray(bounds[1]) && bounds[1].length === 2) {
         const [[south, west], [north, east]] = bounds
+        console.log('Parsed bounds:', { south, west, north, east })
         // Check if bounds are reasonable
         if (south >= -90 && south <= 90 && north >= -90 && north <= 90 &&
             west >= -180 && west <= 180 && east >= -180 && east <= 180 &&
             south < north && west < east) {
+          console.log('Bounds are valid, using them')
           return bounds as [[number, number], [number, number]]
         }
+        console.warn('Bounds failed validation')
       }
       // Invalid bounds, clear it
+      console.log('Clearing invalid bounds from localStorage')
       localStorage.removeItem('lastBounds')
     }
     return null
@@ -1482,14 +1580,16 @@ function App() {
     // If result has a bounding box, use it to fit the view
     if (result.boundingbox && result.boundingbox.length === 4) {
       const [south, north, west, east] = result.boundingbox.map(parseFloat)
-      console.log('Parsed bounds:', { south, north, west, east })
+      console.log('Parsed bounds from API:', { south, north, west, east })
       const bounds: [[number, number], [number, number]] = [[south, west], [north, east]]
+      console.log('Bounds to be saved:', bounds)
 
       setSelectedBounds(bounds)
       setSelectedPosition(null) // Clear position so bounds take precedence
 
       // Save bounds to localStorage
       localStorage.setItem('lastBounds', JSON.stringify(bounds))
+      console.log('Saved to localStorage:', JSON.stringify(bounds))
       localStorage.removeItem('lastPosition') // Remove position when using bounds
     } else {
       // No bounding box, just center on the point
@@ -1756,8 +1856,11 @@ function App() {
 
       <div style={{ height: '100%', width: '100%', filter: filterStyle }}>
         <MapContainer
-          center={selectedPosition || [37.8, -122.4]}
-          zoom={selectedPosition ? 15 : 12}
+          center={selectedPosition || (selectedBounds ? [
+            (selectedBounds[0][0] + selectedBounds[1][0]) / 2,
+            (selectedBounds[0][1] + selectedBounds[1][1]) / 2
+          ] : [37.8, -122.4])}
+          zoom={selectedPosition ? 15 : (selectedBounds ? 10 : 12)}
           style={{ height: '100%', width: '100%' }}
         >
           <MapController position={selectedPosition} zoom={15} bounds={selectedBounds} />
