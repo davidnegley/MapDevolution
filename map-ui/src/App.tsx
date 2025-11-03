@@ -486,6 +486,10 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
 
       console.log('Map bounds:', { south, west, north, east, latSpan, lonSpan })
 
+      // Increment query counter to track this specific query
+      queryCounterRef.current += 1
+      const currentQueryId = queryCounterRef.current
+
       // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
       // use a minimal query with only country boundaries to avoid timeouts
       if (lonSpan > 200 || latSpan > 60) {
@@ -574,10 +578,6 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
 
       // Mark this bbox as being fetched to prevent overlapping queries
       lastBboxRef.current = bbox
-
-      // Increment query counter to track this specific query
-      queryCounterRef.current += 1
-      const currentQueryId = queryCounterRef.current
 
       // Check if we're rate limited
       const now = Date.now()
@@ -1073,17 +1073,13 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
           ctx.fillStyle = '#f0ead6'  // Beige land color (no boundaries = probably inland)
         }
       } else {
-        // At zoom 9+, don't paint any background - let the MapContainer's blue background show through
-        // This way ocean areas will be blue, and we won't cover them
-        // Skip painting background entirely
-        console.log('Skipping canvas background paint at zoom:', zoom, 'to show MapContainer blue background')
+        // At zoom 9+, paint white background - water features will paint blue on top
+        ctx.fillStyle = '#ffffff'  // White base
+        console.log('Painting white background at zoom:', zoom)
       }
 
-      // Only paint background if we have a fillStyle set (zoom < 9)
-      if (zoom < 9) {
-        console.log('Painting background with color:', ctx.fillStyle, 'at zoom:', zoom)
-        ctx.fillRect(0, 0, canvas.width, canvas.height)
-      }
+      console.log('Painting background with color:', ctx.fillStyle, 'at zoom:', zoom)
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
 
       console.log('Rendering canvas:', {
         canvasSize: { width: canvas.width, height: canvas.height },
@@ -1104,12 +1100,14 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
 
       // Render boundaries (countries at zoom < 6, states at zoom 6-11)
       if (zoom < 11 && mapData.boundaries && mapData.boundaries.length > 0) {
-        // Fill boundaries to show land areas
-        // At zoom < 9, use solid fill. At zoom 9-11, still fill but it may include some ocean
-        const shouldFillBoundaries = true
+        // Fill boundaries to show land at zoom < 9
+        // At zoom 9+, only stroke (outline) - don't fill, similar to OSM.org
+        const shouldFillBoundaries = zoom < 9
         console.log('About to render', mapData.boundaries.length, 'boundaries', 'shouldFill:', shouldFillBoundaries, 'zoom:', zoom)
 
-        ctx.fillStyle = '#f0ead6'  // Beige land color
+        if (shouldFillBoundaries) {
+          ctx.fillStyle = '#f0ead6'  // Beige land color
+        }
         ctx.strokeStyle = '#999999'  // Gray boundary
         ctx.lineWidth = zoom < 9 ? 2 : 1  // Thinner line at high zoom
 
