@@ -1513,12 +1513,18 @@ function MapController({ position, zoom, bounds }: { position: [number, number] 
         const centerLon = (west + east) / 2
         console.log('Using fixed zoom 10 for state-sized area')
         map.setView([centerLat, centerLon], 10, { animate: true })
+      } else if (latSpan > 50 || lonSpan > 50) {
+        // Very large bounds (e.g., Norway with all territories) - zoom to center at country level
+        // Geocoding APIs often include remote territories, making bounds too large
+        const centerLat = (south + north) / 2
+        const centerLon = (west + east) / 2
+        console.log('Bounds include territories - using center zoom 5 for country view')
+        map.setView([centerLat, centerLon], 5, { animate: true })
       } else {
-        // For very large areas (continents), set a minimum zoom
-        // For smaller areas, let fitBounds work naturally
+        // For medium/large areas, set appropriate minimum zoom
         let minZoom: number | undefined = undefined
         if (latSpan > 10 || lonSpan > 10) {
-          minZoom = 3  // Continents
+          minZoom = 4  // Large regions/countries
         } else if (latSpan > 0.5 || lonSpan > 0.5) {
           minZoom = 10  // Cities/small regions
         }
