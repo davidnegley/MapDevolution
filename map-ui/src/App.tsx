@@ -1065,22 +1065,25 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
       if (zoom < 6) {
         // At very low zoom (continent/world scale), default to ocean blue
         // Boundaries will paint land on top
-        ctx.fillStyle = '#b3d9ff'  // Light ocean blue
-      } else if (zoom < 10) {
+        ctx.fillStyle = '#70b8ff'  // Ocean blue (same as inland water)
+      } else if (zoom < 9) {
         if (hasBoundaries || hasCoastlines) {
-          ctx.fillStyle = '#b3d9ff'  // Light ocean blue (boundaries/coastlines will show land)
+          ctx.fillStyle = '#70b8ff'  // Ocean blue (boundaries will show land)
         } else {
           ctx.fillStyle = '#f0ead6'  // Beige land color (no boundaries = probably inland)
         }
-      } else if (hasCoastlines) {
-        // When coastlines are present, show ocean background
-        ctx.fillStyle = '#b3d9ff'  // Light ocean blue
-      } else if (hasData) {
-        ctx.fillStyle = '#ffffff'  // White land
       } else {
-        ctx.fillStyle = '#f5f5f5'  // Light gray (no data at high zoom)
+        // At zoom 9+, don't paint any background - let the MapContainer's blue background show through
+        // This way ocean areas will be blue, and we won't cover them
+        // Skip painting background entirely
+        console.log('Skipping canvas background paint at zoom:', zoom, 'to show MapContainer blue background')
       }
-      ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+      // Only paint background if we have a fillStyle set (zoom < 9)
+      if (zoom < 9) {
+        console.log('Painting background with color:', ctx.fillStyle, 'at zoom:', zoom)
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+      }
 
       console.log('Rendering canvas:', {
         canvasSize: { width: canvas.width, height: canvas.height },
@@ -1101,10 +1104,14 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
 
       // Render boundaries (countries at zoom < 6, states at zoom 6-11)
       if (zoom < 11 && mapData.boundaries && mapData.boundaries.length > 0) {
-        console.log('About to render', mapData.boundaries.length, 'boundaries')
+        // Fill boundaries to show land areas
+        // At zoom < 9, use solid fill. At zoom 9-11, still fill but it may include some ocean
+        const shouldFillBoundaries = true
+        console.log('About to render', mapData.boundaries.length, 'boundaries', 'shouldFill:', shouldFillBoundaries, 'zoom:', zoom)
+
         ctx.fillStyle = '#f0ead6'  // Beige land color
         ctx.strokeStyle = '#999999'  // Gray boundary
-        ctx.lineWidth = 2
+        ctx.lineWidth = zoom < 9 ? 2 : 1  // Thinner line at high zoom
 
         let boundariesRendered = 0
         mapData.boundaries.forEach((boundary: Boundary) => {
@@ -1171,7 +1178,9 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
             })
 
             // Fill and stroke the entire boundary at once (handles holes correctly with evenodd rule)
-            ctx.fill('evenodd')
+            if (shouldFillBoundaries) {
+              ctx.fill('evenodd')
+            }
             ctx.stroke()
           }
         })
@@ -1260,19 +1269,9 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
           const type = water.type || 'water'
 
           if (type === 'coastline') {
-            // Render coastline as simple line
-            ctx.strokeStyle = '#70b8ff'  // Blue line
-            ctx.lineWidth = 2
-            ctx.beginPath()
-            water.geometry.coordinates.forEach((coord: number[] | number[][], i: number) => {
-              const c = coord as number[]
-              if (c && c.length === 2) {
-                const point = map.latLngToContainerPoint([c[1], c[0]])
-                if (i === 0) ctx.moveTo(point.x, point.y)
-                else ctx.lineTo(point.x, point.y)
-              }
-            })
-            ctx.stroke()
+            // Don't render coastlines as visible lines at high zoom
+            // They're just reference data, land polygons would be better but we don't have those
+            // Skip rendering individual coastline segments
           } else if (type === 'river' || type === 'stream' || type === 'canal') {
             // Render as line (waterway)
             ctx.strokeStyle = '#70b8ff'  // Darker blue for visibility
@@ -1987,7 +1986,7 @@ function App() {
             (selectedBounds[0][1] + selectedBounds[1][1]) / 2
           ] : [37.8, -122.4])}
           zoom={selectedPosition ? 15 : (selectedBounds ? 10 : 12)}
-          style={{ height: '100%', width: '100%' }}
+          style={{ height: '100%', width: '100%', backgroundColor: '#70b8ff' }}
         >
           <MapController position={selectedPosition} zoom={15} bounds={selectedBounds} />
           <CanvasRenderer showLabels={showLabels} filters={filters} />
