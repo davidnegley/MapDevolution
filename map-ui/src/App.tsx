@@ -332,6 +332,10 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
         : [`${south},${west},${north},${east}`]
       const bbox = bboxes[0] // For logging and single bbox operations
 
+      // Increment query counter to track this specific query (do this early before any returns)
+      queryCounterRef.current += 1
+      const currentQueryId = queryCounterRef.current
+
       // If bbox spans more than 360 degrees (world wrap), fetch only country boundaries
       if (Math.abs(lonSpan) > 360) {
         // Check if we already fetched world boundaries
@@ -485,10 +489,6 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
       const latSpan = north - south
 
       console.log('Map bounds:', { south, west, north, east, latSpan, lonSpan })
-
-      // Increment query counter to track this specific query
-      queryCounterRef.current += 1
-      const currentQueryId = queryCounterRef.current
 
       // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
       // use a minimal query with only country boundaries to avoid timeouts
