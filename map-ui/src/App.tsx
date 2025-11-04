@@ -620,11 +620,12 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
 
       try {
         // Don't query boundaries/coastlines if bbox is too large (will timeout)
-        // At very low zoom (< 6), allow very large bbox for country boundaries (up to 100°)
+        // At very low zoom (< 6), allow very large bbox for country boundaries (up to 160°)
+        // This handles countries with remote territories (e.g., Norway with Svalbard, France with overseas territories)
         // At low-medium zoom (6-8), allow medium bbox for state boundaries (up to 60°)
         // At higher zoom, be more conservative to avoid timeouts
         const bboxIsTooLarge = approximateZoom < 6
-          ? (latSpan > 100 || lonSpan > 100)  // World/continent scale
+          ? (latSpan > 160 || lonSpan > 160)  // World/continent scale - allows countries with territories
           : approximateZoom < 9
           ? (latSpan > 60 || lonSpan > 60)    // Large region scale (e.g., Hawaii, Alaska)
           : (latSpan > 5 || lonSpan > 5)      // State/regional scale
@@ -636,19 +637,15 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
           // At zoom < 11, fetch minimal data to keep query fast
           // At zoom >= 11, fetch all features for custom rendering
           if (approximateZoom < 11) {
-            // Minimal query for low zoom - major roads, water, and coastlines
-            queryParts.push(`way["highway"~"motorway|trunk"](${singleBbox});`)
-            queryParts.push(`way["waterway"](${singleBbox});`)
-            queryParts.push(`way["natural"="water"](${singleBbox});`)
-            // Only fetch coastlines for reasonably sized bboxes
-            if (!bboxIsTooLarge && latSpan < 20 && lonSpan < 100) {
-              queryParts.push(`way["natural"="coastline"](${singleBbox});`)
+            // Minimal query for low zoom
+            // At zoom < 9, ONLY query boundaries - any way queries cause timeouts with boundary relations
+            // At zoom 9-10, add roads and water features
+            if (approximateZoom >= 9) {
+              queryParts.push(`way["highway"~"motorway|trunk"](${singleBbox});`)
+              queryParts.push(`way["waterway"](${singleBbox});`)
+              queryParts.push(`way["natural"="water"](${singleBbox});`)
             }
-            // Only fetch boundaries if not too large
-            if (!bboxIsTooLarge && latSpan < 50 && lonSpan < 100) {
-              // Also fetch state boundaries to draw land area
-              queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4"](${singleBbox});`)
-            }
+            // Note: boundaries are added below outside this block
           } else {
             // Full query for high zoom - all features
             // Roads
@@ -685,15 +682,18 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
             queryParts.push(`node["name"](${singleBbox});`)
           }
 
-          // Fetch coastlines at zoom < 10, but only if bbox is reasonable size
-          // Very large bboxes (> 20° span) will timeout the API
-          if (approximateZoom < 10 && latSpan < 20 && lonSpan < 20) {
+          // Fetch coastlines only at specific zoom ranges:
+          // - At zoom 9-10: for detail when boundaries might not be enough
+          // - Skip at zoom < 9: rely on boundary relations which are much faster
+          // Coastline queries return massive datasets (100K+ elements) even for small areas
+          if (approximateZoom >= 9 && approximateZoom < 10 && latSpan < 10 && lonSpan < 30) {
             queryParts.push(`way["natural"="coastline"](${singleBbox});`)
           }
 
           // Country boundaries for continent-scale views (zoom < 6)
           // State/province boundaries for regional views (zoom 6-9)
-          if (approximateZoom < 6 && !bboxIsTooLarge) {
+          // Boundary relations are much faster than coastlines and sufficient for showing land
+          if (approximateZoom < 6 && !bboxIsTooLarge && latSpan < 25 && lonSpan < 60) {
             queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${singleBbox});`)
           } else if (approximateZoom >= 6 && approximateZoom < 9 && !bboxIsTooLarge) {
             // Fetch state/province boundaries (admin_level 4 in US, sometimes 4-6 elsewhere)
@@ -1499,44 +1499,50 @@ function MapController({ position, zoom, bounds }: { position: [number, number] 
   useEffect(() => {
     if (bounds) {
       // If we have bounds, fit to them instead of using position/zoom
-      // Calculate the bounds size to determine appropriate zoom constraints
       const [[south, west], [north, east]] = bounds
       const latSpan = north - south
       const lonSpan = east - west
 
       console.log('Fitting bounds:', { bounds, latSpan, lonSpan })
 
-      // For state-sized areas (2-5° span), just center and zoom to a fixed level
-      // This avoids Leaflet zooming out too far to fit bounds
-      if ((latSpan > 2 || lonSpan > 2) && latSpan < 5 && lonSpan < 5) {
-        const centerLat = (south + north) / 2
-        const centerLon = (west + east) / 2
-        console.log('Using fixed zoom 10 for state-sized area')
-        map.setView([centerLat, centerLon], 10, { animate: true })
-      } else if (latSpan > 50 || lonSpan > 50) {
-        // Very large bounds (e.g., Norway with all territories) - zoom to center at country level
-        // Geocoding APIs often include remote territories, making bounds too large
-        const centerLat = (south + north) / 2
-        const centerLon = (west + east) / 2
-        console.log('Bounds include territories - using center zoom 5 for country view')
-        map.setView([centerLat, centerLon], 5, { animate: true })
-      } else {
-        // For medium/large areas, set appropriate minimum zoom
-        let minZoom: number | undefined = undefined
-        if (latSpan > 10 || lonSpan > 10) {
-          minZoom = 4  // Large regions/countries
-        } else if (latSpan > 0.5 || lonSpan > 0.5) {
-          minZoom = 10  // Cities/small regions
-        }
+      // Calculate optimal maxZoom based on desired viewport size
+      // Goal: ensure viewport is small enough to avoid Overpass timeouts
+      // At zoom level Z, viewport latSpan ≈ boundingSpan / (2^(Z - initialZoom))
+      // We want viewport < 10° lat and < 30° lon for good query performance
+      const targetMaxLatSpan = 10  // degrees
+      const targetMaxLonSpan = 30  // degrees
 
-        map.fitBounds(bounds, {
-          padding: [50, 50],
-          animate: true,
-          duration: 1.5,
-          maxZoom: 15,
-          ...(minZoom && { minZoom })
-        })
+      // Calculate zoom needed to fit within targets
+      // Each zoom level doubles the scale, so halves the span
+      const zoomForLat = latSpan > targetMaxLatSpan
+        ? Math.ceil(Math.log2(latSpan / targetMaxLatSpan)) + 7  // base zoom 7 + adjustments
+        : 15
+      const zoomForLon = lonSpan > targetMaxLonSpan
+        ? Math.ceil(Math.log2(lonSpan / targetMaxLonSpan)) + 7
+        : 15
+
+      const calculatedMaxZoom = Math.min(zoomForLat, zoomForLon, 15)
+      console.log('Calculated maxZoom:', { zoomForLat, zoomForLon, calculatedMaxZoom })
+
+      // For very large bounds (> 50°), estimate mainland bounds to avoid remote territories
+      let boundsToFit = bounds
+      if (latSpan > 50 || lonSpan > 50) {
+        // Exclude extreme 20% on each end to focus on mainland
+        const latPadding = latSpan * 0.2
+        const lonPadding = lonSpan * 0.2
+        boundsToFit = [
+          [south + latPadding, west + lonPadding],
+          [north - latPadding, east - lonPadding]
+        ]
+        console.log('Large bounds detected - using estimated mainland bounds')
       }
+
+      map.fitBounds(boundsToFit, {
+        padding: [50, 50],
+        animate: true,
+        duration: 1.5,
+        maxZoom: calculatedMaxZoom
+      })
 
       // Log the actual zoom level after fitting
       setTimeout(() => {
@@ -1713,13 +1719,29 @@ function App() {
       const bounds: [[number, number], [number, number]] = [[south, west], [north, east]]
       console.log('Bounds to be saved:', bounds)
 
-      setSelectedBounds(bounds)
-      setSelectedPosition(null) // Clear position so bounds take precedence
+      const latSpan = north - south
+      const lonSpan = east - west
 
-      // Save bounds to localStorage
-      localStorage.setItem('lastBounds', JSON.stringify(bounds))
-      console.log('Saved to localStorage:', JSON.stringify(bounds))
-      localStorage.removeItem('lastPosition') // Remove position when using bounds
+      // For very large bounds (countries with remote territories), save the center point
+      // for map view but keep the full bounds for data querying
+      if (latSpan > 50 || lonSpan > 50) {
+        console.log('Large bounds detected - using center point for view, full bounds for data')
+        setSelectedPosition(position) // Use Nominatim's center point for view
+        setSelectedBounds(bounds)     // Keep full bounds for data queries
+
+        // Save both to localStorage
+        localStorage.setItem('lastPosition', JSON.stringify(position))
+        localStorage.setItem('lastBounds', JSON.stringify(bounds))
+      } else {
+        // Normal sized bounds - use bounds for both view and data
+        setSelectedBounds(bounds)
+        setSelectedPosition(null)
+
+        // Save bounds to localStorage
+        localStorage.setItem('lastBounds', JSON.stringify(bounds))
+        console.log('Saved to localStorage:', JSON.stringify(bounds))
+        localStorage.removeItem('lastPosition')
+      }
     } else {
       // No bounding box, just center on the point
       setSelectedPosition(position)
