@@ -692,8 +692,9 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
 
           // Country boundaries for continent-scale views (zoom < 6)
           // State/province boundaries for regional views (zoom 6-9)
-          // Boundary relations are much faster than coastlines and sufficient for showing land
-          if (approximateZoom < 6 && !bboxIsTooLarge && latSpan < 25 && lonSpan < 60) {
+          // Since we skip highways/waterways at low zoom, boundaries alone are fast even for large bbox
+          if (approximateZoom < 6 && !bboxIsTooLarge) {
+            // Admin level 2 = countries - works well even for large areas
             queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${singleBbox});`)
           } else if (approximateZoom >= 6 && approximateZoom < 9 && !bboxIsTooLarge) {
             // Fetch state/province boundaries (admin_level 4 in US, sometimes 4-6 elsewhere)
@@ -1505,27 +1506,11 @@ function MapController({ position, zoom, bounds }: { position: [number, number] 
 
       console.log('Fitting bounds:', { bounds, latSpan, lonSpan })
 
-      // Calculate optimal maxZoom based on desired viewport size
-      // Goal: ensure viewport is small enough to avoid Overpass timeouts
-      // At zoom level Z, viewport latSpan ≈ boundingSpan / (2^(Z - initialZoom))
-      // We want viewport < 10° lat and < 30° lon for good query performance
-      const targetMaxLatSpan = 10  // degrees
-      const targetMaxLonSpan = 30  // degrees
-
-      // Calculate zoom needed to fit within targets
-      // Each zoom level doubles the scale, so halves the span
-      const zoomForLat = latSpan > targetMaxLatSpan
-        ? Math.ceil(Math.log2(latSpan / targetMaxLatSpan)) + 7  // base zoom 7 + adjustments
-        : 15
-      const zoomForLon = lonSpan > targetMaxLonSpan
-        ? Math.ceil(Math.log2(lonSpan / targetMaxLonSpan)) + 7
-        : 15
-
-      const calculatedMaxZoom = Math.min(zoomForLat, zoomForLon, 15)
-      console.log('Calculated maxZoom:', { zoomForLat, zoomForLon, calculatedMaxZoom })
-
       // For very large bounds (> 50°), estimate mainland bounds to avoid remote territories
       let boundsToFit = bounds
+      let adjustedLatSpan = latSpan
+      let adjustedLonSpan = lonSpan
+
       if (latSpan > 50 || lonSpan > 50) {
         // Exclude extreme 20% on each end to focus on mainland
         const latPadding = latSpan * 0.2
@@ -1534,15 +1519,52 @@ function MapController({ position, zoom, bounds }: { position: [number, number] 
           [south + latPadding, west + lonPadding],
           [north - latPadding, east - lonPadding]
         ]
-        console.log('Large bounds detected - using estimated mainland bounds')
+        // Recalculate spans for the trimmed bounds
+        adjustedLatSpan = latSpan * 0.6  // 60% of original (removed 20% from each end)
+        adjustedLonSpan = lonSpan * 0.6
+        console.log('Large bounds detected - using estimated mainland bounds', {
+          originalLatSpan: latSpan,
+          adjustedLatSpan,
+          originalLonSpan: lonSpan,
+          adjustedLonSpan
+        })
       }
 
-      map.fitBounds(boundsToFit, {
-        padding: [50, 50],
-        animate: true,
-        duration: 1.5,
-        maxZoom: calculatedMaxZoom
-      })
+      // For large adjusted bounds, use fixed zoom level
+      // Leaflet's fitBounds doesn't support minZoom, may zoom out too far (zoom 3 shows whole world)
+      if (adjustedLatSpan > 15) {
+        // Very large region - use zoom 5 which shows ~22° viewport
+        // This is a good compromise: shows significant portion while keeping queries fast
+        const fixedZoom = 5
+
+        console.log('Large region - using fixed zoom 5:', {
+          adjustedLatSpan,
+          adjustedLonSpan,
+          zoom: fixedZoom
+        })
+
+        // Use position from geocoding if available (proper country center)
+        // Otherwise calculate center from trimmed bounds
+        let centerLat, centerLon
+        if (position) {
+          [centerLat, centerLon] = position
+          console.log('Using geocoding center point:', { lat: centerLat, lon: centerLon })
+        } else {
+          centerLat = boundsToFit[0][0] + (boundsToFit[1][0] - boundsToFit[0][0]) / 2
+          centerLon = boundsToFit[0][1] + (boundsToFit[1][1] - boundsToFit[0][1]) / 2
+          console.log('Using calculated center from bounds:', { lat: centerLat, lon: centerLon })
+        }
+        map.setView([centerLat, centerLon], fixedZoom, { animate: true })
+      } else {
+        // Small enough region - use fitBounds
+        console.log('Using fitBounds for region:', { adjustedLatSpan, adjustedLonSpan })
+        map.fitBounds(boundsToFit, {
+          padding: [50, 50],
+          animate: true,
+          duration: 1.5,
+          maxZoom: 15
+        })
+      }
 
       // Log the actual zoom level after fitting
       setTimeout(() => {
