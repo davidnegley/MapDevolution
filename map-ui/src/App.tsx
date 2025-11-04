@@ -490,10 +490,20 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
 
       console.log('Map bounds:', { south, west, north, east, latSpan, lonSpan })
 
+      // Use actual map zoom instead of calculated zoom
+      // This ensures query decisions match what the user sees
+      const actualZoom = map.getZoom()
+
+      // Calculate zoom level from lat span (rough approximation) as fallback
+      // At equator: zoom ~= log2(360 / latSpan)
+      const approximateZoom = actualZoom || Math.log2(180 / latSpan)
+
       // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
       // use a minimal query with only country boundaries to avoid timeouts
-      if (lonSpan > 200 || latSpan > 60) {
-        console.warn('Bbox very large:', { latSpan, lonSpan }, 'Using minimal boundary-only query')
+      // Also use backend boundaries for low zoom (< 9) to get better coastline detail
+      // Backend has pre-processed, detailed boundaries from Natural Earth data
+      if (approximateZoom < 9 || lonSpan > 200 || latSpan > 60) {
+        console.log('Using backend boundaries for better coastline detail:', { latSpan, lonSpan, zoom: approximateZoom })
 
         // Skip if we just did this query
         const cacheKey = `large-bbox-${Math.round(south)}-${Math.round(west)}-${Math.round(north)}-${Math.round(east)}`
@@ -534,14 +544,6 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
           return
         }
       }
-
-      // Use actual map zoom instead of calculated zoom
-      // This ensures query decisions match what the user sees
-      const actualZoom = map.getZoom()
-
-      // Calculate zoom level from lat span (rough approximation) as fallback
-      // At equator: zoom ~= log2(360 / latSpan)
-      const approximateZoom = actualZoom || Math.log2(180 / latSpan)
 
       // Skip relation queries when zoomed out too far (bbox > 1 degree)
       const skipRelations = latSpan > 1 || lonSpan > 1
@@ -682,11 +684,13 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
             queryParts.push(`node["name"](${singleBbox});`)
           }
 
-          // Fetch coastlines only at specific zoom ranges:
-          // - At zoom 9-10: for detail when boundaries might not be enough
-          // - Skip at zoom < 9: rely on boundary relations which are much faster
-          // Coastline queries return massive datasets (100K+ elements) even for small areas
-          if (approximateZoom >= 9 && approximateZoom < 10 && latSpan < 10 && lonSpan < 30) {
+          // Fetch coastlines at zoom 6+ for better detail, with very restrictive bbox limits
+          // Coastline queries return massive datasets (100K+ elements), so limit carefully
+          // At zoom 6-8: very small bbox only (< 5° lat, < 15° lon)
+          // At zoom 9-10: slightly larger bbox allowed
+          if (approximateZoom >= 6 && approximateZoom < 9 && latSpan < 5 && lonSpan < 15) {
+            queryParts.push(`way["natural"="coastline"](${singleBbox});`)
+          } else if (approximateZoom >= 9 && approximateZoom < 10 && latSpan < 10 && lonSpan < 30) {
             queryParts.push(`way["natural"="coastline"](${singleBbox});`)
           }
 
