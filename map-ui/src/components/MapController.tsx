@@ -19,12 +19,14 @@ export function MapController({ position, zoom, bounds }: MapControllerProps) {
 
       console.log('Fitting bounds:', { bounds, latSpan, lonSpan });
 
-      // For very large bounds (> 50°), estimate mainland bounds to avoid remote territories
+      // For very large bounds (> 50° in BOTH dimensions), estimate mainland bounds to avoid remote territories
+      // Only trim if both lat AND lon are large (e.g., France with overseas territories, Norway with Svalbard)
+      // Don't trim elongated countries like Chile (large lat span but small lon span)
       let boundsToFit = bounds;
       let adjustedLatSpan = latSpan;
       let adjustedLonSpan = lonSpan;
 
-      if (latSpan > 50 || lonSpan > 50) {
+      if (latSpan > 50 && lonSpan > 50) {
         // Exclude extreme 20% on each end to focus on mainland
         const latPadding = latSpan * 0.2;
         const lonPadding = lonSpan * 0.2;
