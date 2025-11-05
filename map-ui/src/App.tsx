@@ -166,11 +166,13 @@ function App() {
       localStorage.removeItem('lastBounds') // Remove bounds when using position
     }
 
+    // Hide suggestions immediately
+    setShowSuggestions(false)
+    setSuggestions([])
+
     // Remove comma after street number
     const cleanedAddress = result.display_name.replace(/^(\d+),\s*/, '$1 ')
     setSearchQuery(cleanedAddress)
-    setSuggestions([])
-    setShowSuggestions(false)
 
     // Save query to localStorage
     localStorage.setItem('lastSearchQuery', cleanedAddress)
