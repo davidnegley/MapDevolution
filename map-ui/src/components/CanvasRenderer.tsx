@@ -812,9 +812,16 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
           ctx.fillStyle = '#f0ead6'  // Beige land color (no boundaries = probably inland)
         }
       } else {
-        // At zoom 9+, paint white background - water features will paint blue on top
-        ctx.fillStyle = '#ffffff'  // White base
-        console.log('Painting white background at zoom:', zoom)
+        // At zoom 9+, check if we have coastlines (indicating islands/coastal areas)
+        // If so, paint ocean blue background - land will be painted on top
+        // Otherwise, paint white background - water features will paint blue on top
+        if (hasCoastlines) {
+          ctx.fillStyle = '#70b8ff'  // Ocean blue for islands/coastal areas
+          console.log('Painting ocean blue background for coastlines at zoom:', zoom)
+        } else {
+          ctx.fillStyle = '#ffffff'  // White base for inland areas
+          console.log('Painting white background at zoom:', zoom)
+        }
       }
 
       console.log('Painting background with color:', ctx.fillStyle, 'at zoom:', zoom)
@@ -1000,15 +1007,45 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
       // Render detailed foreground parks (wetlands, forests, etc.)
       foregroundParks.forEach(renderPark)
 
+      // First, render land areas enclosed by coastlines (if at high zoom with ocean background)
+      if (zoom >= 9 && hasCoastlines) {
+        // Collect all coastline segments and fill enclosed areas with land color
+        ctx.fillStyle = '#f0ead6'  // Beige land color
+        ctx.strokeStyle = '#a0a0a0'  // Gray coastline border
+        ctx.lineWidth = 1
+
+        mapData.water?.forEach((water: Water) => {
+          if (water.geometry && water.geometry.coordinates && water.geometry.coordinates.length > 0 && water.type === 'coastline') {
+            // Render coastline as filled polygon (land) with stroked border
+            ctx.beginPath()
+            let firstPoint = true
+            water.geometry.coordinates.forEach((coord: number[] | number[][]) => {
+              const c = coord as number[]
+              if (c && c.length === 2) {
+                const point = map.latLngToContainerPoint([c[1], c[0]])
+                if (firstPoint) {
+                  ctx.moveTo(point.x, point.y)
+                  firstPoint = false
+                } else {
+                  ctx.lineTo(point.x, point.y)
+                }
+              }
+            })
+            ctx.closePath()
+            ctx.fill()
+            ctx.stroke()
+          }
+        })
+      }
+
       // Render water bodies
       mapData.water?.forEach((water: Water) => {
         if (water.geometry && water.geometry.coordinates && water.geometry.coordinates.length > 0) {
           const type = water.type || 'water'
 
           if (type === 'coastline') {
-            // Don't render coastlines as visible lines at high zoom
-            // They're just reference data, land polygons would be better but we don't have those
-            // Skip rendering individual coastline segments
+            // Coastlines already rendered above as land areas at high zoom
+            // Skip individual coastline rendering here
           } else if (type === 'river' || type === 'stream' || type === 'canal') {
             // Render as line (waterway)
             ctx.strokeStyle = '#70b8ff'  // Darker blue for visibility
