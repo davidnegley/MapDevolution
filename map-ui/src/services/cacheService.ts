@@ -7,7 +7,7 @@ const DB_VERSION = 1
 const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
-    request.onerror = () => reject(request.error)
+    request.onerror = () => reject(new Error(request.error?.message || 'Failed to open database'))
     request.onsuccess = () => resolve(request.result)
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result
@@ -25,8 +25,11 @@ export const getCachedData = async (bbox: string): Promise<MapData | null> => {
       const transaction = db.transaction(STORE_NAME, 'readonly')
       const store = transaction.objectStore(STORE_NAME)
       const request = store.get(bbox)
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => resolve(request.result?.data || null)
+      request.onerror = () => reject(new Error(request.error?.message || 'Failed to get cached data'))
+      request.onsuccess = () => {
+        const result = request.result as { data: MapData } | undefined
+        resolve(result?.data || null)
+      }
     })
   } catch (error) {
     console.error('Cache read error:', error)
@@ -41,7 +44,7 @@ export const setCachedData = async (bbox: string, data: MapData): Promise<void> 
       const transaction = db.transaction(STORE_NAME, 'readwrite')
       const store = transaction.objectStore(STORE_NAME)
       const request = store.put({ bbox, data, timestamp: Date.now() })
-      request.onerror = () => reject(request.error)
+      request.onerror = () => reject(new Error(request.error?.message || 'Failed to cache data'))
       request.onsuccess = () => resolve()
     })
   } catch (error) {

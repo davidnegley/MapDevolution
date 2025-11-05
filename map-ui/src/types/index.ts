@@ -50,25 +50,22 @@ export interface MapData {
 }
 
 export interface SearchResult {
+  place_id: number
   display_name: string
   lat: string
   lon: string
-  boundingbox: string[]
-  type: string
-  class: string
+  boundingbox?: [string, string, string, string] // [south, north, west, east]
 }
 
 export interface MapFilters {
-  minArea: number
+  brightness: number
+  contrast: number
+  saturation: number
+  hueRotate: number
+  grayscale: number
 }
 
 export interface Palette {
-  waterFill: string
-  waterStroke: string
-  roadStroke: string
-  roadBorderStroke: string
-  buildingFill: string
-  buildingStroke: string
-  labelFill: string
-  labelStroke: string
+  name: string
+  filters: MapFilters
 }

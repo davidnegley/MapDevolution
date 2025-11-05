@@ -2,6 +2,9 @@ import { MapContainer, Marker, Popup, useMap } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 import { useState, useEffect, useRef } from 'react'
+import type { Road, Building, Water, Park, Label, Boundary, MapData, SearchResult, MapFilters, Palette } from './types'
+import { getCachedData, setCachedData } from './services/cacheService'
+import { simplifyGeometry } from './utils/geometry'
 
 // Fix for default marker icon in React-Leaflet
 import L from 'leaflet'
@@ -16,156 +19,6 @@ const DefaultIcon = L.icon({
 })
 
 L.Marker.prototype.options.icon = DefaultIcon
-
-interface Geometry {
-  coordinates: number[][] | number[][][]
-}
-
-interface Road {
-  type: string
-  geometry: Geometry
-}
-
-interface Building {
-  geometry: {
-    coordinates: number[][][]
-  }
-}
-
-interface Water {
-  type: string
-  geometry: Geometry
-}
-
-interface Park {
-  type: string
-  name?: string
-  geometry: {
-    coordinates: number[][][] | number[][][][]
-  }
-}
-
-interface Label {
-  lat: number
-  lon: number
-  name: string
-}
-
-interface Boundary {
-  type: string
-  name?: string
-  geometry: {
-    coordinates: number[][][] | number[][][][]
-  }
-}
-
-interface MapData {
-  roads: Road[]
-  buildings: Building[]
-  water: Water[]
-  parks: Park[]
-  labels: Label[]
-  boundaries: Boundary[]
-}
-
-// IndexedDB cache for map data
-const DB_NAME = 'MapCache'
-const STORE_NAME = 'tiles'
-const DB_VERSION = 1
-
-// Douglas-Peucker algorithm for geometry simplification
-const simplifyGeometry = (coords: number[][], tolerance: number): number[][] => {
-  if (coords.length <= 2) return coords
-
-  const sqTolerance = tolerance * tolerance
-
-  // Find point with maximum distance from line segment
-  let maxDist = 0
-  let maxIndex = 0
-  const first = coords[0]
-  const last = coords[coords.length - 1]
-
-  for (let i = 1; i < coords.length - 1; i++) {
-    const dist = perpendicularDistanceSquared(coords[i], first, last)
-    if (dist > maxDist) {
-      maxDist = dist
-      maxIndex = i
-    }
-  }
-
-  // If max distance is greater than tolerance, recursively simplify
-  if (maxDist > sqTolerance) {
-    const left = simplifyGeometry(coords.slice(0, maxIndex + 1), tolerance)
-    const right = simplifyGeometry(coords.slice(maxIndex), tolerance)
-    return [...left.slice(0, -1), ...right]
-  }
-
-  return [first, last]
-}
-
-const perpendicularDistanceSquared = (point: number[], lineStart: number[], lineEnd: number[]): number => {
-  const [x, y] = point
-  const [x1, y1] = lineStart
-  const [x2, y2] = lineEnd
-
-  const dx = x2 - x1
-  const dy = y2 - y1
-
-  if (dx === 0 && dy === 0) {
-    return (x - x1) ** 2 + (y - y1) ** 2
-  }
-
-  const t = Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy)))
-  const projX = x1 + t * dx
-  const projY = y1 + t * dy
-
-  return (x - projX) ** 2 + (y - projY) ** 2
-}
-
-const openDB = (): Promise<IDBDatabase> => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION)
-    request.onerror = () => reject(request.error)
-    request.onsuccess = () => resolve(request.result)
-    request.onupgradeneeded = (event) => {
-      const db = (event.target as IDBOpenDBRequest).result
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'bbox' })
-      }
-    }
-  })
-}
-
-const getCachedData = async (bbox: string): Promise<MapData | null> => {
-  try {
-    const db = await openDB()
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_NAME, 'readonly')
-      const store = transaction.objectStore(STORE_NAME)
-      const request = store.get(bbox)
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => resolve(request.result?.data || null)
-    })
-  } catch (error) {
-    console.error('Cache read error:', error)
-    return null
-  }
-}
-
-const setCachedData = async (bbox: string, data: MapData): Promise<void> => {
-  try {
-    const db = await openDB()
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_NAME, 'readwrite')
-      const store = transaction.objectStore(STORE_NAME)
-      const request = store.put({ bbox, data, timestamp: Date.now() })
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => resolve()
-    })
-  } catch (error) {
-    console.error('Cache write error:', error)
-  }
-}
 
 // Custom Canvas Renderer Component
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -1490,14 +1343,6 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
   )
 }
 
-interface SearchResult {
-  place_id: number
-  display_name: string
-  lat: string
-  lon: string
-  boundingbox?: [string, string, string, string] // [south, north, west, east]
-}
-
 function MapController({ position, zoom, bounds }: { position: [number, number] | null, zoom: number, bounds?: [[number, number], [number, number]] | null }) {
   const map = useMap()
 
@@ -1580,19 +1425,6 @@ function MapController({ position, zoom, bounds }: { position: [number, number] 
   }, [position, zoom, bounds, map])
 
   return null
-}
-
-interface MapFilters {
-  brightness: number
-  contrast: number
-  saturation: number
-  hueRotate: number
-  grayscale: number
-}
-
-interface Palette {
-  name: string
-  filters: MapFilters
 }
 
 const PRESET_PALETTES: Palette[] = [
