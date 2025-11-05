@@ -34,7 +34,7 @@ function CanvasRenderer({ showLabels, filters: _filters }: { showLabels: boolean
     })
   }, [mapData])
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const fetchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const fetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const rateLimitedUntil = useRef<number>(0)
   const lastBboxRef = useRef<string>('')
   const queryCounterRef = useRef<number>(0)
@@ -1409,7 +1409,7 @@ function App() {
     const saved = localStorage.getItem('showLabels')
     return saved ? JSON.parse(saved) : true
   })
-  const debounceTimer = useRef<NodeJS.Timeout | null>(null)
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Load last search query on mount
   useEffect(() => {
