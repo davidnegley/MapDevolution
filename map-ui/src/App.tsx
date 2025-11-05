@@ -138,7 +138,12 @@ function App() {
 
       // For very large bounds (countries with remote territories), save the center point
       // for map view but keep the full bounds for data querying
-      if (latSpan > 50 || lonSpan > 50) {
+      // Special handling: if lonSpan is very large but latSpan is moderate, this likely
+      // indicates a country with remote islands (e.g., Chile with Easter Island)
+      // In this case, use the Nominatim center point for the view
+      const hasRemoteTerritory = (latSpan > 50 || lonSpan > 50) || (lonSpan > 30 && latSpan < 50);
+
+      if (hasRemoteTerritory) {
         console.log('Large bounds detected - using center point for view, full bounds for data');
         setSelectedPosition(position); // Use Nominatim's center point for view
         setSelectedBounds(bounds);     // Keep full bounds for data queries
