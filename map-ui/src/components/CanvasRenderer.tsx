@@ -421,10 +421,10 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
           // Fetch coastlines at zoom 6+ for better detail, with very restrictive bbox limits
           // Coastline queries return massive datasets (100K+ elements), so limit carefully
           // At zoom 6-8: very small bbox only (< 5° lat, < 15° lon)
-          // At zoom 9-10: slightly larger bbox allowed
+          // At zoom 9+: slightly larger bbox allowed
           if (approximateZoom >= 6 && approximateZoom < 9 && latSpan < 5 && lonSpan < 15) {
             queryParts.push(`way["natural"="coastline"](${singleBbox});`)
-          } else if (approximateZoom >= 9 && approximateZoom < 10 && latSpan < 10 && lonSpan < 30) {
+          } else if (approximateZoom >= 9 && latSpan < 10 && lonSpan < 30) {
             queryParts.push(`way["natural"="coastline"](${singleBbox});`)
           }
 
