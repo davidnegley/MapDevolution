@@ -1,4 +1,4 @@
-import type { Palette } from '../types'
+import type { Palette } from '../types';
 
 export const PRESET_PALETTES: Palette[] = [
   {
@@ -37,4 +37,4 @@ export const PRESET_PALETTES: Palette[] = [
     name: 'Cool',
     filters: { brightness: 100, contrast: 100, saturation: 110, hueRotate: 180, grayscale: 0 }
   }
-]
+];

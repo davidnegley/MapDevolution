@@ -1,216 +1,216 @@
-import { MapContainer, Marker, Popup } from 'react-leaflet'
-import 'leaflet/dist/leaflet.css'
-import './App.css'
-import { useState, useEffect, useRef } from 'react'
-import type { SearchResult, MapFilters, Palette } from './types'
-import { CanvasRenderer } from './components/CanvasRenderer'
-import { MapController } from './components/MapController'
-import { PRESET_PALETTES } from './constants/palettes'
+import { MapContainer, Marker, Popup } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import './App.css';
+import { useState, useEffect, useRef } from 'react';
+import type { SearchResult, MapFilters, Palette } from './types';
+import { CanvasRenderer } from './components/CanvasRenderer';
+import { MapController } from './components/MapController';
+import { PRESET_PALETTES } from './constants/palettes';
 
 // Fix for default marker icon in React-Leaflet
-import L from 'leaflet'
-import icon from 'leaflet/dist/images/marker-icon.png'
-import iconShadow from 'leaflet/dist/images/marker-shadow.png'
+import L from 'leaflet';
+import icon from 'leaflet/dist/images/marker-icon.png';
+import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 
 const DefaultIcon = L.icon({
   iconUrl: icon,
   shadowUrl: iconShadow,
   iconSize: [25, 41],
   iconAnchor: [12, 41]
-})
+});
 
-L.Marker.prototype.options.icon = DefaultIcon
+L.Marker.prototype.options.icon = DefaultIcon;
 
 
 function App() {
 
-  const [searchQuery, setSearchQuery] = useState('')
-  const [suggestions, setSuggestions] = useState<SearchResult[]>([])
+  const [searchQuery, setSearchQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
   const [selectedPosition, setSelectedPosition] = useState<[number, number] | null>(() => {
-    const saved = localStorage.getItem('lastPosition')
+    const saved = localStorage.getItem('lastPosition');
     if (saved) {
-      const pos = JSON.parse(saved)
+      const pos = JSON.parse(saved);
       // Validate position is reasonable (latitude between -90 and 90, longitude between -180 and 180)
       if (Array.isArray(pos) && pos.length === 2 &&
           pos[0] >= -90 && pos[0] <= 90 &&
           pos[1] >= -180 && pos[1] <= 180) {
-        return pos as [number, number]
+        return pos as [number, number];
       }
     }
-    return null
-  })
+    return null;
+  });
   const [selectedBounds, setSelectedBounds] = useState<[[number, number], [number, number]] | null>(() => {
-    const saved = localStorage.getItem('lastBounds')
+    const saved = localStorage.getItem('lastBounds');
     if (saved) {
-      console.log('Loading bounds from localStorage:', saved)
-      const bounds = JSON.parse(saved)
+      console.log('Loading bounds from localStorage:', saved);
+      const bounds = JSON.parse(saved);
       // Validate bounds format and values
       if (Array.isArray(bounds) && bounds.length === 2 &&
           Array.isArray(bounds[0]) && bounds[0].length === 2 &&
           Array.isArray(bounds[1]) && bounds[1].length === 2) {
-        const [[south, west], [north, east]] = bounds
-        console.log('Parsed bounds:', { south, west, north, east })
+        const [[south, west], [north, east]] = bounds;
+        console.log('Parsed bounds:', { south, west, north, east });
         // Check if bounds are reasonable
         if (south >= -90 && south <= 90 && north >= -90 && north <= 90 &&
             west >= -180 && west <= 180 && east >= -180 && east <= 180 &&
             south < north && west < east) {
-          console.log('Bounds are valid, using them')
-          return bounds as [[number, number], [number, number]]
+          console.log('Bounds are valid, using them');
+          return bounds as [[number, number], [number, number]];
         }
-        console.warn('Bounds failed validation')
+        console.warn('Bounds failed validation');
       }
       // Invalid bounds, clear it
-      console.log('Clearing invalid bounds from localStorage')
-      localStorage.removeItem('lastBounds')
+      console.log('Clearing invalid bounds from localStorage');
+      localStorage.removeItem('lastBounds');
     }
-    return null
-  })
-  const [showSuggestions, setShowSuggestions] = useState(false)
-  const [showFilters, setShowFilters] = useState(false)
-  const [filters, setFilters] = useState<MapFilters>(PRESET_PALETTES[0].filters)
-  const [customPalettes, setCustomPalettes] = useState<Palette[]>([])
-  const [selectedPalette, setSelectedPalette] = useState<string>('Default')
+    return null;
+  });
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState<MapFilters>(PRESET_PALETTES[0].filters);
+  const [customPalettes, setCustomPalettes] = useState<Palette[]>([]);
+  const [selectedPalette, setSelectedPalette] = useState<string>('Default');
   const [showLabels, setShowLabels] = useState<boolean>(() => {
-    const saved = localStorage.getItem('showLabels')
-    return saved ? JSON.parse(saved) : true
-  })
-  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const saved = localStorage.getItem('showLabels');
+    return saved ? JSON.parse(saved) : true;
+  });
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load last search query on mount
   useEffect(() => {
-    const savedQuery = localStorage.getItem('lastSearchQuery')
+    const savedQuery = localStorage.getItem('lastSearchQuery');
     if (savedQuery) {
-      setSearchQuery(savedQuery)
+      setSearchQuery(savedQuery);
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
     if (searchQuery.length < 3) {
-      setSuggestions([])
-      return
+      setSuggestions([]);
+      return;
     }
 
     // Debounce the search
     if (debounceTimer.current) {
-      clearTimeout(debounceTimer.current)
+      clearTimeout(debounceTimer.current);
     }
 
     debounceTimer.current = setTimeout(async () => {
       try {
         const response = await fetch(
           `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=5&dedupe=1`
-        )
-        const data = await response.json()
+        );
+        const data = await response.json();
         // Remove duplicates based on display_name
         const uniqueResults = data.filter((result: SearchResult, index: number, self: SearchResult[]) =>
           index === self.findIndex((r) => r.display_name === result.display_name)
-        )
-        setSuggestions(uniqueResults)
-        setShowSuggestions(true)
+        );
+        setSuggestions(uniqueResults);
+        setShowSuggestions(true);
       } catch (error) {
-        console.error('Error fetching suggestions:', error)
+        console.error('Error fetching suggestions:', error);
       }
-    }, 300)
+    }, 300);
 
     return () => {
       if (debounceTimer.current) {
-        clearTimeout(debounceTimer.current)
+        clearTimeout(debounceTimer.current);
       }
-    }
-  }, [searchQuery])
+    };
+  }, [searchQuery]);
 
   const handleSelectAddress = (result: SearchResult) => {
-    const lat = parseFloat(result.lat)
-    const lon = parseFloat(result.lon)
-    const position: [number, number] = [lat, lon]
+    const lat = parseFloat(result.lat);
+    const lon = parseFloat(result.lon);
+    const position: [number, number] = [lat, lon];
 
-    console.log('Selected address:', result.display_name, 'boundingbox:', result.boundingbox)
+    console.log('Selected address:', result.display_name, 'boundingbox:', result.boundingbox);
 
     // If result has a bounding box, use it to fit the view
     if (result.boundingbox && result.boundingbox.length === 4) {
-      const [south, north, west, east] = result.boundingbox.map(parseFloat)
-      console.log('Parsed bounds from API:', { south, north, west, east })
-      const bounds: [[number, number], [number, number]] = [[south, west], [north, east]]
-      console.log('Bounds to be saved:', bounds)
+      const [south, north, west, east] = result.boundingbox.map(parseFloat);
+      console.log('Parsed bounds from API:', { south, north, west, east });
+      const bounds: [[number, number], [number, number]] = [[south, west], [north, east]];
+      console.log('Bounds to be saved:', bounds);
 
-      const latSpan = north - south
-      const lonSpan = east - west
+      const latSpan = north - south;
+      const lonSpan = east - west;
 
       // For very large bounds (countries with remote territories), save the center point
       // for map view but keep the full bounds for data querying
       if (latSpan > 50 || lonSpan > 50) {
-        console.log('Large bounds detected - using center point for view, full bounds for data')
-        setSelectedPosition(position) // Use Nominatim's center point for view
-        setSelectedBounds(bounds)     // Keep full bounds for data queries
+        console.log('Large bounds detected - using center point for view, full bounds for data');
+        setSelectedPosition(position); // Use Nominatim's center point for view
+        setSelectedBounds(bounds);     // Keep full bounds for data queries
 
         // Save both to localStorage
-        localStorage.setItem('lastPosition', JSON.stringify(position))
-        localStorage.setItem('lastBounds', JSON.stringify(bounds))
+        localStorage.setItem('lastPosition', JSON.stringify(position));
+        localStorage.setItem('lastBounds', JSON.stringify(bounds));
       } else {
         // Normal sized bounds - use bounds for both view and data
-        setSelectedBounds(bounds)
-        setSelectedPosition(null)
+        setSelectedBounds(bounds);
+        setSelectedPosition(null);
 
         // Save bounds to localStorage
-        localStorage.setItem('lastBounds', JSON.stringify(bounds))
-        console.log('Saved to localStorage:', JSON.stringify(bounds))
-        localStorage.removeItem('lastPosition')
+        localStorage.setItem('lastBounds', JSON.stringify(bounds));
+        console.log('Saved to localStorage:', JSON.stringify(bounds));
+        localStorage.removeItem('lastPosition');
       }
     } else {
       // No bounding box, just center on the point
-      setSelectedPosition(position)
-      setSelectedBounds(null)
+      setSelectedPosition(position);
+      setSelectedBounds(null);
 
       // Save position to localStorage
-      localStorage.setItem('lastPosition', JSON.stringify(position))
-      localStorage.removeItem('lastBounds') // Remove bounds when using position
+      localStorage.setItem('lastPosition', JSON.stringify(position));
+      localStorage.removeItem('lastBounds'); // Remove bounds when using position
     }
 
     // Hide suggestions immediately
-    setShowSuggestions(false)
-    setSuggestions([])
+    setShowSuggestions(false);
+    setSuggestions([]);
 
     // Remove comma after street number
-    const cleanedAddress = result.display_name.replace(/^(\d+),\s*/, '$1 ')
-    setSearchQuery(cleanedAddress)
+    const cleanedAddress = result.display_name.replace(/^(\d+),\s*/, '$1 ');
+    setSearchQuery(cleanedAddress);
 
     // Save query to localStorage
-    localStorage.setItem('lastSearchQuery', cleanedAddress)
-  }
+    localStorage.setItem('lastSearchQuery', cleanedAddress);
+  };
 
-  const allPalettes = [...PRESET_PALETTES, ...customPalettes]
+  const allPalettes = [...PRESET_PALETTES, ...customPalettes];
 
   const handlePaletteChange = (paletteName: string) => {
-    setSelectedPalette(paletteName)
-    const palette = allPalettes.find(p => p.name === paletteName)
+    setSelectedPalette(paletteName);
+    const palette = allPalettes.find(p => p.name === paletteName);
     if (palette) {
-      setFilters(palette.filters)
+      setFilters(palette.filters);
     }
-  }
+  };
 
   const handleSaveCustomPalette = () => {
-    const name = prompt('Enter a name for this custom palette:')
+    const name = prompt('Enter a name for this custom palette:');
     if (name && name.trim()) {
       const newPalette: Palette = {
         name: name.trim(),
         filters: { ...filters }
-      }
-      setCustomPalettes([...customPalettes, newPalette])
-      setSelectedPalette(newPalette.name)
+      };
+      setCustomPalettes([...customPalettes, newPalette]);
+      setSelectedPalette(newPalette.name);
     }
-  }
+  };
 
   const handleFilterChange = (key: keyof MapFilters, value: number) => {
-    setFilters({...filters, [key]: value})
-    setSelectedPalette('Custom')
-  }
+    setFilters({...filters, [key]: value});
+    setSelectedPalette('Custom');
+  };
 
   // Save preferences to localStorage
   useEffect(() => {
-    localStorage.setItem('showLabels', JSON.stringify(showLabels))
-  }, [showLabels])
+    localStorage.setItem('showLabels', JSON.stringify(showLabels));
+  }, [showLabels]);
 
-  const filterStyle = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%) hue-rotate(${filters.hueRotate}deg) grayscale(${filters.grayscale}%)`
+  const filterStyle = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%) hue-rotate(${filters.hueRotate}deg) grayscale(${filters.grayscale}%)`;
 
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
@@ -231,7 +231,7 @@ function App() {
           onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && suggestions.length > 0) {
-              handleSelectAddress(suggestions[0])
+              handleSelectAddress(suggestions[0]);
             }
           }}
           placeholder="Search for an address..."
@@ -256,7 +256,7 @@ function App() {
           }}>
             {suggestions.map((result) => {
               // Remove comma after street number
-              const cleanedName = result.display_name.replace(/^(\d+),\s*/, '$1 ')
+              const cleanedName = result.display_name.replace(/^(\d+),\s*/, '$1 ');
               return (
                 <div
                   key={result.place_id}
@@ -272,7 +272,7 @@ function App() {
                 >
                   {cleanedName}
                 </div>
-              )
+              );
             })}
           </div>
         )}
@@ -442,7 +442,7 @@ function App() {
         </MapContainer>
       </div>
     </div>
-  )
+  );
 }
 
-export default App
+export default App;
