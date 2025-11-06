@@ -79,7 +79,7 @@ function App() {
   });
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load last search query on mount
+  // Load last search query on mount (but don't show suggestions)
   useEffect(() => {
     const savedQuery = localStorage.getItem('lastSearchQuery');
     if (savedQuery) {
@@ -90,6 +90,7 @@ function App() {
   useEffect(() => {
     if (searchQuery.length < 3) {
       setSuggestions([]);
+      setShowSuggestions(false);
       return;
     }
 
@@ -109,7 +110,7 @@ function App() {
           index === self.findIndex((r) => r.display_name === result.display_name)
         );
         setSuggestions(uniqueResults);
-        setShowSuggestions(true);
+        // Don't automatically show suggestions - only show when user focuses input
       } catch (error) {
         console.error('Error fetching suggestions:', error);
       }
@@ -263,7 +264,8 @@ function App() {
               border: `1px solid ${borderColor}`,
               borderRadius: '4px',
               backgroundColor: bgColor,
-              color: textColor
+              color: textColor,
+              boxSizing: 'border-box'
             }}
           />
         </div>
@@ -299,14 +301,34 @@ function App() {
 
         {/* Night Mode Toggle */}
         <div style={{ padding: '16px', marginTop: 'auto', borderTop: `1px solid ${borderColor}` }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: textColor }}>
-            <input
-              type="checkbox"
-              checked={nightMode}
-              onChange={(e) => setNightMode(e.target.checked)}
-              style={{ cursor: 'pointer' }}
-            />
-            <span>Night Mode</span>
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', color: textColor }}>
+            <span style={{ fontSize: '14px', fontWeight: '500' }}>Night Mode</span>
+            <div
+              onClick={() => setNightMode(!nightMode)}
+              style={{
+                position: 'relative',
+                width: '48px',
+                height: '24px',
+                backgroundColor: nightMode ? '#4CAF50' : borderColor,
+                borderRadius: '12px',
+                transition: 'background-color 0.3s',
+                cursor: 'pointer'
+              }}
+            >
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '2px',
+                  left: nightMode ? '26px' : '2px',
+                  width: '20px',
+                  height: '20px',
+                  backgroundColor: 'white',
+                  borderRadius: '50%',
+                  transition: 'left 0.3s',
+                  boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                }}
+              />
+            </div>
           </label>
         </div>
       </div>
