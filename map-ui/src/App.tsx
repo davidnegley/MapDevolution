@@ -66,13 +66,16 @@ function App() {
     return null;
   });
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<MapFilters>(PRESET_PALETTES[0].filters);
   const [customPalettes, setCustomPalettes] = useState<Palette[]>([]);
   const [selectedPalette, setSelectedPalette] = useState<string>('Default');
   const [showLabels, setShowLabels] = useState<boolean>(() => {
     const saved = localStorage.getItem('showLabels');
     return saved ? JSON.parse(saved) : true;
+  });
+  const [nightMode, setNightMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('nightMode');
+    return saved ? JSON.parse(saved) : false;
   });
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -215,65 +218,77 @@ function App() {
     localStorage.setItem('showLabels', JSON.stringify(showLabels));
   }, [showLabels]);
 
+  useEffect(() => {
+    localStorage.setItem('nightMode', JSON.stringify(nightMode));
+  }, [nightMode]);
+
   const filterStyle = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%) hue-rotate(${filters.hueRotate}deg) grayscale(${filters.grayscale}%)`;
 
+  // Theme colors
+  const bgColor = nightMode ? '#1e1e1e' : '#ffffff';
+  const textColor = nightMode ? '#e0e0e0' : '#000000';
+  const borderColor = nightMode ? '#404040' : '#ccc';
+  const hoverBg = nightMode ? '#2d2d2d' : '#f0f0f0';
+
   return (
-    <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
+    <div style={{ width: '100vw', height: '100vh', display: 'flex' }}>
+      {/* Left Sidebar - Search Panel */}
       <div style={{
-        position: 'absolute',
-        top: '20px',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 1000,
-        width: '90%',
-        maxWidth: '500px'
+        width: '300px',
+        height: '100%',
+        backgroundColor: bgColor,
+        borderRight: `1px solid ${borderColor}`,
+        display: 'flex',
+        flexDirection: 'column',
+        zIndex: 1000
       }}>
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
-          onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && suggestions.length > 0) {
-              handleSelectAddress(suggestions[0]);
-            }
-          }}
-          placeholder="Search for an address..."
-          style={{
-            width: '100%',
-            padding: '12px',
-            fontSize: '16px',
-            border: '2px solid #ccc',
-            borderRadius: '8px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-          }}
-        />
+        <div style={{ padding: '16px', borderBottom: `1px solid ${borderColor}` }}>
+          <h2 style={{ margin: '0 0 12px 0', fontSize: '18px', color: textColor, fontWeight: 'bold' }}>Search Location</h2>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && suggestions.length > 0) {
+                handleSelectAddress(suggestions[0]);
+              }
+            }}
+            placeholder="Search for an address..."
+            style={{
+              width: '100%',
+              padding: '10px',
+              fontSize: '14px',
+              border: `1px solid ${borderColor}`,
+              borderRadius: '4px',
+              backgroundColor: bgColor,
+              color: textColor
+            }}
+          />
+        </div>
+
         {showSuggestions && suggestions.length > 0 && (
           <div style={{
-            marginTop: '4px',
-            backgroundColor: 'white',
-            border: '1px solid #ccc',
-            borderRadius: '8px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
             maxHeight: '300px',
-            overflowY: 'auto'
+            overflowY: 'auto',
+            borderBottom: `1px solid ${borderColor}`
           }}>
             {suggestions.map((result) => {
-              // Remove comma after street number
               const cleanedName = result.display_name.replace(/^(\d+),\s*/, '$1 ');
               return (
                 <div
                   key={result.place_id}
                   onClick={() => handleSelectAddress(result)}
                   style={{
-                    padding: '12px',
+                    padding: '12px 16px',
                     cursor: 'pointer',
-                    borderBottom: '1px solid #eee',
-                    color: '#000'
+                    borderBottom: `1px solid ${borderColor}`,
+                    color: textColor,
+                    fontSize: '13px'
                   }}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'white'}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = hoverBg}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = bgColor}
                 >
                   {cleanedName}
                 </div>
@@ -281,152 +296,23 @@ function App() {
             })}
           </div>
         )}
-      </div>
 
-      {/* Color Filter Controls */}
-      <div style={{
-        position: 'absolute',
-        top: '20px',
-        right: '20px',
-        zIndex: 1000,
-        backgroundColor: 'white',
-        borderRadius: '8px',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-        padding: '12px',
-        minWidth: '250px',
-        pointerEvents: 'auto'
-      }}>
-        <div style={{ marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowFilters(!showFilters)}>
-          <strong style={{ color: '#000' }}>Map Colors</strong>
-          <span style={{ fontSize: '18px' }}>
-            {showFilters ? '▼' : '▶'}
-          </span>
+        {/* Night Mode Toggle */}
+        <div style={{ padding: '16px', marginTop: 'auto', borderTop: `1px solid ${borderColor}` }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: textColor }}>
+            <input
+              type="checkbox"
+              checked={nightMode}
+              onChange={(e) => setNightMode(e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            <span>Night Mode</span>
+          </label>
         </div>
-        {showFilters && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div>
-              <label style={{ color: '#000', fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', display: 'block' }}>Palette</label>
-              <select
-                value={selectedPalette}
-                onChange={(e) => handlePaletteChange(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '8px',
-                  border: '1px solid #ccc',
-                  borderRadius: '4px',
-                  color: '#000',
-                  backgroundColor: 'white'
-                }}
-              >
-                <option value="Custom">Custom</option>
-                {allPalettes.map(palette => (
-                  <option key={palette.name} value={palette.name}>{palette.name}</option>
-                ))}
-              </select>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <input
-                type="checkbox"
-                id="showLabels"
-                checked={showLabels}
-                onChange={(e) => setShowLabels(e.target.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              <label htmlFor="showLabels" style={{ color: '#000', fontSize: '12px', cursor: 'pointer' }}>
-                Show Labels
-              </label>
-            </div>
-            <div>
-              <label style={{ color: '#000', fontSize: '12px' }}>Brightness: {filters.brightness}%</label>
-              <input
-                type="range"
-                min="0"
-                max="200"
-                value={filters.brightness}
-                onChange={(e) => handleFilterChange('brightness', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div>
-              <label style={{ color: '#000', fontSize: '12px' }}>Contrast: {filters.contrast}%</label>
-              <input
-                type="range"
-                min="0"
-                max="200"
-                value={filters.contrast}
-                onChange={(e) => handleFilterChange('contrast', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div>
-              <label style={{ color: '#000', fontSize: '12px' }}>Saturation: {filters.saturation}%</label>
-              <input
-                type="range"
-                min="0"
-                max="200"
-                value={filters.saturation}
-                onChange={(e) => handleFilterChange('saturation', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div>
-              <label style={{ color: '#000', fontSize: '12px' }}>Hue Rotate: {filters.hueRotate}°</label>
-              <input
-                type="range"
-                min="0"
-                max="360"
-                value={filters.hueRotate}
-                onChange={(e) => handleFilterChange('hueRotate', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div>
-              <label style={{ color: '#000', fontSize: '12px' }}>Grayscale: {filters.grayscale}%</label>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={filters.grayscale}
-                onChange={(e) => handleFilterChange('grayscale', Number(e.target.value))}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                onClick={() => handlePaletteChange('Default')}
-                style={{
-                  flex: 1,
-                  padding: '8px',
-                  backgroundColor: '#f0f0f0',
-                  border: '1px solid #ccc',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  color: '#000'
-                }}
-              >
-                Reset
-              </button>
-              <button
-                onClick={handleSaveCustomPalette}
-                style={{
-                  flex: 1,
-                  padding: '8px',
-                  backgroundColor: '#4CAF50',
-                  border: '1px solid #45a049',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  color: 'white',
-                  fontWeight: 'bold'
-                }}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
-      <div style={{ height: '100%', width: '100%', filter: filterStyle }}>
+      {/* Main Map Area */}
+      <div style={{ flex: 1, height: '100%', position: 'relative', filter: filterStyle }}>
         <MapContainer
           center={selectedPosition || (selectedBounds ? [
             (selectedBounds[0][0] + selectedBounds[1][0]) / 2,
@@ -445,6 +331,151 @@ function App() {
             </Marker>
           )}
         </MapContainer>
+      </div>
+
+      {/* Right Sidebar - Settings Panel */}
+      <div style={{
+        width: '300px',
+        height: '100%',
+        backgroundColor: bgColor,
+        borderLeft: `1px solid ${borderColor}`,
+        display: 'flex',
+        flexDirection: 'column',
+        overflowY: 'auto',
+        zIndex: 1000
+      }}>
+        <div style={{ padding: '16px' }}>
+          <div style={{ marginBottom: '16px' }}>
+            <h2 style={{ margin: '0 0 12px 0', fontSize: '18px', color: textColor, fontWeight: 'bold' }}>Map Colors</h2>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ color: textColor, fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', display: 'block' }}>Palette</label>
+              <select
+                value={selectedPalette}
+                onChange={(e) => handlePaletteChange(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '8px',
+                  border: `1px solid ${borderColor}`,
+                  borderRadius: '4px',
+                  color: textColor,
+                  backgroundColor: bgColor
+                }}
+              >
+                <option value="Custom">Custom</option>
+                {allPalettes.map(palette => (
+                  <option key={palette.name} value={palette.name}>{palette.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: textColor }}>
+                <input
+                  type="checkbox"
+                  checked={showLabels}
+                  onChange={(e) => setShowLabels(e.target.checked)}
+                  style={{ cursor: 'pointer' }}
+                />
+                <span style={{ fontSize: '12px' }}>Show Labels</span>
+              </label>
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ color: textColor, fontSize: '12px' }}>Brightness: {filters.brightness}%</label>
+              <input
+                type="range"
+                min="0"
+                max="200"
+                value={filters.brightness}
+                onChange={(e) => handleFilterChange('brightness', Number(e.target.value))}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ color: textColor, fontSize: '12px' }}>Contrast: {filters.contrast}%</label>
+              <input
+                type="range"
+                min="0"
+                max="200"
+                value={filters.contrast}
+                onChange={(e) => handleFilterChange('contrast', Number(e.target.value))}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ color: textColor, fontSize: '12px' }}>Saturation: {filters.saturation}%</label>
+              <input
+                type="range"
+                min="0"
+                max="200"
+                value={filters.saturation}
+                onChange={(e) => handleFilterChange('saturation', Number(e.target.value))}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ color: textColor, fontSize: '12px' }}>Hue Rotate: {filters.hueRotate}°</label>
+              <input
+                type="range"
+                min="0"
+                max="360"
+                value={filters.hueRotate}
+                onChange={(e) => handleFilterChange('hueRotate', Number(e.target.value))}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ color: textColor, fontSize: '12px' }}>Grayscale: {filters.grayscale}%</label>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={filters.grayscale}
+                onChange={(e) => handleFilterChange('grayscale', Number(e.target.value))}
+                style={{ width: '100%' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                onClick={() => handlePaletteChange('Default')}
+                style={{
+                  flex: 1,
+                  padding: '10px',
+                  backgroundColor: hoverBg,
+                  border: `1px solid ${borderColor}`,
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  color: textColor,
+                  fontSize: '13px'
+                }}
+              >
+                Reset
+              </button>
+              <button
+                onClick={handleSaveCustomPalette}
+                style={{
+                  flex: 1,
+                  padding: '10px',
+                  backgroundColor: '#4CAF50',
+                  border: '1px solid #45a049',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  color: 'white',
+                  fontWeight: 'bold',
+                  fontSize: '13px'
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
