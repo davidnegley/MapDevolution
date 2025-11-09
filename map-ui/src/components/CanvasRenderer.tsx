@@ -912,15 +912,54 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         // Fill boundaries to show land at zoom < 9, OR at zoom 9+ if we have coastlines (ocean background)
         // At zoom 9+ with no coastlines (inland), only stroke (outline)
         const shouldFillBoundaries = zoom < 9 || (zoom >= 9 && hasCoastlines);
+        // Skip stroke at very low zoom (< 6) for performance - barely visible anyway
+        const shouldStroke = zoom >= 6;
 
         if (shouldFillBoundaries) {
           ctx.fillStyle = '#f0ead6';  // Beige land color
         }
-        ctx.strokeStyle = '#999999';  // Gray boundary
-        ctx.lineWidth = zoom < 9 ? 2 : 1;  // Thinner line at high zoom
+        if (shouldStroke) {
+          ctx.strokeStyle = '#999999';  // Gray boundary
+          ctx.lineWidth = zoom < 9 ? 2 : 1;  // Thinner line at high zoom
+        }
+
+        // Aggressive point reduction at low zoom for performance
+        // At zoom 5, skip every N points to reduce coordinate transformations
+        const pointSkip = zoom < 6 ? Math.floor(8 / zoom) : 1;  // Skip more points at lower zoom
+
+        // Get viewport bounds for culling offscreen features
+        const bounds = map.getBounds();
+        const viewportSouth = bounds.getSouth();
+        const viewportWest = bounds.getWest();
+        const viewportNorth = bounds.getNorth();
+        const viewportEast = bounds.getEast();
 
         mapData.boundaries.forEach((boundary: Boundary) => {
           if (boundary.geometry && boundary.geometry.coordinates) {
+            // Quick bounds check - skip boundaries completely outside viewport
+            // This is approximate but fast - checks if ANY ring might be visible
+            let mightBeVisible = false;
+            for (const ring of boundary.geometry.coordinates) {
+              const actualRing = ring as number[][];
+              if (actualRing && actualRing.length > 0) {
+                // Check first few points for rough bounds check
+                for (let i = 0; i < Math.min(5, actualRing.length); i++) {
+                  const coord = actualRing[i];
+                  if (coord && coord.length === 2) {
+                    const lat = coord[1];
+                    const lon = coord[0];
+                    // Check if point is roughly in viewport (with margin for curves)
+                    if (lat >= viewportSouth - 20 && lat <= viewportNorth + 20 &&
+                        lon >= viewportWest - 20 && lon <= viewportEast + 20) {
+                      mightBeVisible = true;
+                      break;
+                    }
+                  }
+                }
+                if (mightBeVisible) break;
+              }
+            }
+            if (!mightBeVisible) return;  // Skip this boundary entirely
             // Start a single path for this entire boundary (all its rings)
             ctx.beginPath();
 
@@ -957,7 +996,12 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
                 // Add each segment to the same path (for proper hole handling)
                 segments.forEach((segment: number[][]) => {
                   if (segment.length > 2) {
+                    // Apply point skipping for performance at low zoom
                     segment.forEach((coord: number[], i: number) => {
+                      // Skip intermediate points based on zoom level
+                      if (pointSkip > 1 && i > 0 && i < segment.length - 1 && i % pointSkip !== 0) {
+                        return;
+                      }
                       const point = map.latLngToContainerPoint([coord[1], coord[0]]);
                       if (i === 0) {
                         ctx.moveTo(point.x, point.y);
@@ -975,7 +1019,9 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             if (shouldFillBoundaries) {
               ctx.fill('evenodd');
             }
-            ctx.stroke();
+            if (shouldStroke) {
+              ctx.stroke();
+            }
           }
         });
       }
