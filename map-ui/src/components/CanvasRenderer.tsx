@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMap } from 'react-leaflet';
 import L from 'leaflet';
-import type { Road, Building, Water, Park, Label, Boundary, MapData, MapFilters } from '../types';
+import type { Road, Building, Water, Park, Label, Boundary, MapData, MapFilters, FeatureControls } from '../types';
 import { getCachedData, setCachedData } from '../services/cacheService';
 import { simplifyGeometry } from '../utils/geometry';
 
 interface CanvasRendererProps {
   showLabels: boolean
   filters: MapFilters
+  featureControls: FeatureControls
 }
 
-export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRendererProps) {
+export function CanvasRenderer({ showLabels, filters: _filters, featureControls }: CanvasRendererProps) {
   const map = useMap();
   const [mapData, setMapData] = useState<MapData>({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries: [] });
   const [isLoading, setIsLoading] = useState(false);
@@ -66,10 +67,6 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
         : [`${south},${west},${north},${east}`];
       const bbox = bboxes[0]; // For logging and single bbox operations
 
-      // Increment query counter to track this specific query (do this early before any returns)
-      queryCounterRef.current += 1;
-      const currentQueryId = queryCounterRef.current;
-
       // If bbox spans more than 360 degrees (world wrap), fetch only country boundaries
       if (Math.abs(lonSpan) > 360) {
         // Check if we already fetched world boundaries
@@ -79,6 +76,10 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
         }
 
         console.warn('Bbox spans too wide (world wrap), fetching only country boundaries');
+
+        // Increment query counter for this fetch
+        queryCounterRef.current += 1;
+        const currentQueryId = queryCounterRef.current;
 
         // For very large areas, just fetch country boundaries
         try {
@@ -249,6 +250,10 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
 
         setIsLoading(true);
 
+        // Increment query counter for this fetch
+        queryCounterRef.current += 1;
+        const currentQueryId = queryCounterRef.current;
+
         try {
           // Fetch pre-processed country boundaries from backend API
           console.log('Fetching country boundaries from backend API...');
@@ -339,9 +344,9 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
 
         // Only use cache if it has actual data (not empty from a failed fetch)
         if (hasData) {
-          if (currentQueryId === queryCounterRef.current) {
-            setMapData(cached);
-          }
+          console.log('Setting cached data');
+          setMapData(cached);
+          setIsLoading(false);
           return;
         } else {
           console.log('Cached data is empty, fetching fresh data...');
@@ -351,6 +356,11 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
       }
 
       console.log('Fetching map data for bbox:', bbox, 'zoom level:', approximateZoom.toFixed(1));
+
+      // Increment query counter now that we're actually starting a fetch
+      queryCounterRef.current += 1;
+      const currentQueryId = queryCounterRef.current;
+      console.log('Starting new query with ID:', currentQueryId);
 
       setIsLoading(true);
 
@@ -364,7 +374,7 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
           ? (latSpan > 160 || lonSpan > 160)  // World/continent scale - allows countries with territories
           : approximateZoom < 9
           ? (latSpan > 60 || lonSpan > 60)    // Large region scale (e.g., Hawaii, Alaska)
-          : (latSpan > 5 || lonSpan > 5);      // State/regional scale
+          : (latSpan > 10 || lonSpan > 10);    // State/regional scale - allow larger bbox for island chains
 
         // Helper function to build query parts for a single bbox
         const buildQueryPartsForBbox = (singleBbox: string) => {
@@ -377,71 +387,85 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
             // At zoom < 9, ONLY query boundaries - any way queries cause timeouts with boundary relations
             // At zoom 9-10, add roads and water features
             if (approximateZoom >= 9) {
-              queryParts.push(`way["highway"~"motorway|trunk"](${singleBbox});`);
-              queryParts.push(`way["waterway"](${singleBbox});`);
-              queryParts.push(`way["natural"="water"](${singleBbox});`);
+              if (featureControls.roads !== 'disabled') {
+                queryParts.push(`way["highway"~"motorway|trunk"](${singleBbox});`);
+              }
+              if (featureControls.water !== 'disabled') {
+                queryParts.push(`way["waterway"](${singleBbox});`);
+                queryParts.push(`way["natural"="water"](${singleBbox});`);
+              }
             }
             // Note: boundaries are added below outside this block
           } else {
             // Full query for high zoom - all features
             // Roads
-            if (skipMinorRoads) {
-              queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${singleBbox});`);
-            } else {
-              queryParts.push(`way["highway"](${singleBbox});`);
+            if (featureControls.roads !== 'disabled') {
+              if (skipMinorRoads) {
+                queryParts.push(`way["highway"~"motorway|trunk|primary|secondary"](${singleBbox});`);
+              } else {
+                queryParts.push(`way["highway"](${singleBbox});`);
+              }
             }
 
             // Buildings only at high zoom
-            if (!skipBuildings) {
+            if (featureControls.buildings !== 'disabled' && !skipBuildings) {
               queryParts.push(`way["building"](${singleBbox});`);
             }
 
             // Water features
-            queryParts.push(`way["waterway"](${singleBbox});`);
-            queryParts.push(`way["natural"="water"](${singleBbox});`);
+            if (featureControls.water !== 'disabled') {
+              queryParts.push(`way["waterway"](${singleBbox});`);
+              queryParts.push(`way["natural"="water"](${singleBbox});`);
+            }
 
             // Parks and natural features
-            queryParts.push(`way["leisure"="park"](${singleBbox});`);
-            queryParts.push(`way["leisure"="nature_reserve"](${singleBbox});`);
-            queryParts.push(`way["boundary"="national_park"](${singleBbox});`);
-            queryParts.push(`way["boundary"="protected_area"](${singleBbox});`);
-            queryParts.push(`way["landuse"="forest"](${singleBbox});`);
-            queryParts.push(`way["landuse"="grass"](${singleBbox});`);
-            queryParts.push(`way["landuse"="meadow"](${singleBbox});`);
-            queryParts.push(`way["landuse"="wetland"](${singleBbox});`);
-            queryParts.push(`way["natural"="wood"](${singleBbox});`);
-            queryParts.push(`way["natural"="wetland"](${singleBbox});`);
-            queryParts.push(`way["natural"="marsh"](${singleBbox});`);
-            queryParts.push(`way["natural"="swamp"](${singleBbox});`);
+            if (featureControls.parks !== 'disabled') {
+              queryParts.push(`way["leisure"="park"](${singleBbox});`);
+              queryParts.push(`way["leisure"="nature_reserve"](${singleBbox});`);
+              queryParts.push(`way["boundary"="national_park"](${singleBbox});`);
+              queryParts.push(`way["boundary"="protected_area"](${singleBbox});`);
+              queryParts.push(`way["landuse"="forest"](${singleBbox});`);
+              queryParts.push(`way["landuse"="grass"](${singleBbox});`);
+              queryParts.push(`way["landuse"="meadow"](${singleBbox});`);
+              queryParts.push(`way["landuse"="wetland"](${singleBbox});`);
+              queryParts.push(`way["natural"="wood"](${singleBbox});`);
+              queryParts.push(`way["natural"="wetland"](${singleBbox});`);
+              queryParts.push(`way["natural"="marsh"](${singleBbox});`);
+              queryParts.push(`way["natural"="swamp"](${singleBbox});`);
+            }
 
             // Labels
-            queryParts.push(`node["name"](${singleBbox});`);
+            if (featureControls.labels !== 'disabled') {
+              queryParts.push(`node["name"](${singleBbox});`);
+            }
           }
 
           // Fetch coastlines at zoom 6+ for better detail, with very restrictive bbox limits
           // Coastline queries return massive datasets (100K+ elements), so limit carefully
           // At zoom 6-8: very small bbox only (< 5° lat, < 15° lon)
           // At zoom 9+: slightly larger bbox allowed
-          if (approximateZoom >= 6 && approximateZoom < 9 && latSpan < 5 && lonSpan < 15) {
-            queryParts.push(`way["natural"="coastline"](${singleBbox});`);
-          } else if (approximateZoom >= 9 && latSpan < 10 && lonSpan < 30) {
-            queryParts.push(`way["natural"="coastline"](${singleBbox});`);
-          }
+          if (featureControls.boundaries !== 'disabled') {
+            if (approximateZoom >= 6 && approximateZoom < 9 && latSpan < 5 && lonSpan < 15) {
+              queryParts.push(`way["natural"="coastline"](${singleBbox});`);
+            } else if (approximateZoom >= 9 && latSpan < 10 && lonSpan < 30) {
+              queryParts.push(`way["natural"="coastline"](${singleBbox});`);
+            }
 
-          // Country boundaries for continent-scale views (zoom < 6)
-          // State/province boundaries for regional views (zoom 6-9)
-          // Since we skip highways/waterways at low zoom, boundaries alone are fast even for large bbox
-          if (approximateZoom < 6 && !bboxIsTooLarge) {
-            // Admin level 2 = countries - works well even for large areas
-            queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${singleBbox});`);
-          } else if (approximateZoom >= 6 && approximateZoom < 9 && !bboxIsTooLarge) {
-            // Fetch state/province boundaries (admin_level 4 in US, sometimes 4-6 elsewhere)
-            queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${singleBbox});`);
-          }
+            // Country boundaries for continent-scale views (zoom < 6)
+            // State/province boundaries for regional views (zoom 6-9)
+            // Since we skip highways/waterways at low zoom, boundaries alone are fast even for large bbox
+            if (approximateZoom < 6 && !bboxIsTooLarge) {
+              // Admin level 2 = countries - works well even for large areas
+              queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${singleBbox});`);
+            } else if (approximateZoom >= 6 && approximateZoom < 9 && !bboxIsTooLarge) {
+              // Fetch state/province boundaries (admin_level 4 in US, sometimes 4-6 elsewhere)
+              queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${singleBbox});`);
+            }
 
-          // For medium zoom (9-11), also fetch state/county boundaries to show land areas
-          if (approximateZoom >= 9 && approximateZoom < 11 && !bboxIsTooLarge) {
-            queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${singleBbox});`);
+            // For medium zoom (9-11), also fetch state/county boundaries to show land areas
+            if (approximateZoom >= 9 && approximateZoom < 11 && !bboxIsTooLarge) {
+              queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${singleBbox});`);
+            }
           }
 
           return queryParts;
@@ -577,13 +601,21 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
 
         const water: Water[] = data.elements
           .filter((el) => (el.tags?.waterway || el.tags?.natural === 'water' || el.tags?.natural === 'coastline') && (el.geometry || el.members))
-          .map((el) => ({
-            type: el.tags?.waterway || el.tags?.natural || 'water',
-            geometry: {
-              coordinates: el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) ||
-                          (el.members ? el.members.flatMap(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []) : [])
-            }
-          }))
+          .map((el) => {
+            const type = el.tags?.waterway || el.tags?.natural || 'water';
+            const isPolygon = type === 'water' || type === 'coastline'; // water bodies and coastlines are polygons
+            const coords = el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) ||
+                          (el.members ? el.members.flatMap(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []) : []);
+
+            return {
+              type,
+              geometry: {
+                // For polygons (water bodies, coastlines), coordinates is array of rings: [[[lon,lat],...]]
+                // For lines (rivers, streams), coordinates is array of points: [[lon,lat],...]
+                coordinates: isPolygon && coords.length > 0 ? [coords] : coords
+              }
+            };
+          })
           .filter(w => w.geometry.coordinates.length > 0);
 
         const parks: Park[] = data.elements
@@ -741,13 +773,14 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
         });
 
         // Only update state if this is still the most recent query
+        console.log('Query completed:', { currentQueryId, currentRef: queryCounterRef.current, bbox });
         if (currentQueryId === queryCounterRef.current) {
           setMapData(mapData);
 
           // Cache the result
           await setCachedData(bbox, mapData);
         } else {
-          console.log('Ignoring stale query response for bbox:', bbox);
+          console.log('Ignoring stale query response for bbox:', bbox, 'current:', queryCounterRef.current, 'received:', currentQueryId);
         }
       } catch (error) {
         console.error('Error fetching map data:', error);
@@ -845,11 +878,11 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
       });
 
       // Render boundaries (countries at zoom < 6, states at zoom 6-11)
-      if (zoom < 11 && mapData.boundaries && mapData.boundaries.length > 0) {
-        // Fill boundaries to show land at zoom < 9
-        // At zoom 9+, only stroke (outline) - don't fill, similar to OSM.org
-        const shouldFillBoundaries = zoom < 9;
-        console.log('About to render', mapData.boundaries.length, 'boundaries', 'shouldFill:', shouldFillBoundaries, 'zoom:', zoom);
+      if (featureControls.boundaries === 'enabled' && zoom < 11 && mapData.boundaries && mapData.boundaries.length > 0) {
+        // Fill boundaries to show land at zoom < 9, OR at zoom 9+ if we have coastlines (ocean background)
+        // At zoom 9+ with no coastlines (inland), only stroke (outline)
+        const shouldFillBoundaries = zoom < 9 || (zoom >= 9 && hasCoastlines);
+        console.log('About to render', mapData.boundaries.length, 'boundaries', 'shouldFill:', shouldFillBoundaries, 'zoom:', zoom, 'hasCoastlines:', hasCoastlines);
 
         if (shouldFillBoundaries) {
           ctx.fillStyle = '#f0ead6';  // Beige land color
@@ -931,12 +964,12 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
       }
 
       // Separate parks into background (large protected areas) and foreground (detailed features)
-      const backgroundParks = mapData.parks?.filter((p: Park) =>
+      const backgroundParks = featureControls.parks === 'enabled' ? (mapData.parks?.filter((p: Park) =>
         p.type === 'nature_reserve' || p.type === 'national_park' || p.type === 'protected_area'
-      ) || [];
-      const foregroundParks = mapData.parks?.filter((p: Park) =>
+      ) || []) : [];
+      const foregroundParks = featureControls.parks === 'enabled' ? (mapData.parks?.filter((p: Park) =>
         p.type !== 'nature_reserve' && p.type !== 'national_park' && p.type !== 'protected_area'
-      ) || [];
+      ) || []) : [];
 
       // Render large background areas first (nature reserves, national parks)
       const renderPark = (park: Park) => {
@@ -972,13 +1005,15 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
           ctx.lineWidth = type === 'nature_reserve' || type === 'national_park' || type === 'protected_area' ? 2 : 1;
 
           // Handle both simple polygons and complex multipolygons
+          // Add all rings to a single path for proper hole handling
+          ctx.beginPath();
+          let hasAnyValidPoints = false;
+
           park.geometry.coordinates.forEach((coordSet: number[][] | number[][][]) => {
             const rings = Array.isArray(coordSet[0]?.[0]) ? (coordSet as number[][][]) : [coordSet as number[][]];
 
             rings.forEach((ring: number[][]) => {
               if (ring && ring.length > 0) {
-                ctx.beginPath();
-                let hasValidPoint = false;
                 ring.forEach((coord: number[], i: number) => {
                   if (coord && coord.length === 2 && !isNaN(coord[0]) && !isNaN(coord[1])) {
                     const point = map.latLngToContainerPoint([coord[1], coord[0]]);
@@ -987,17 +1022,19 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
                     } else {
                       ctx.lineTo(point.x, point.y);
                     }
-                    hasValidPoint = true;
+                    hasAnyValidPoints = true;
                   }
                 });
-                if (hasValidPoint) {
-                  ctx.closePath();
-                  ctx.fill();
-                  ctx.stroke();
-                }
+                ctx.closePath();
               }
             });
           });
+
+          // Fill once with evenodd rule to handle holes
+          if (hasAnyValidPoints) {
+            ctx.fill('evenodd');
+            ctx.stroke();
+          }
         }
       };
 
@@ -1007,39 +1044,33 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
       // Render detailed foreground parks (wetlands, forests, etc.)
       foregroundParks.forEach(renderPark);
 
-      // First, render land areas enclosed by coastlines (if at high zoom with ocean background)
-      if (zoom >= 9 && hasCoastlines) {
-        // Collect all coastline segments and fill enclosed areas with land color
-        ctx.fillStyle = '#f0ead6';  // Beige land color
-        ctx.strokeStyle = '#a0a0a0';  // Gray coastline border
-        ctx.lineWidth = 1;
+      // Render coastlines as lines (not filled) - OSM coastlines are linestrings, not polygons
+      if (featureControls.boundaries === 'enabled' && zoom >= 9 && hasCoastlines) {
+        ctx.strokeStyle = '#888888';  // Gray coastline
+        ctx.lineWidth = 2;
 
         mapData.water?.forEach((water: Water) => {
           if (water.geometry && water.geometry.coordinates && water.geometry.coordinates.length > 0 && water.type === 'coastline') {
-            // Render coastline as filled polygon (land) with stroked border
-            ctx.beginPath();
-            let firstPoint = true;
-            water.geometry.coordinates.forEach((coord: number[] | number[][]) => {
-              const c = coord as number[];
-              if (c && c.length === 2) {
-                const point = map.latLngToContainerPoint([c[1], c[0]]);
-                if (firstPoint) {
-                  ctx.moveTo(point.x, point.y);
-                  firstPoint = false;
-                } else {
-                  ctx.lineTo(point.x, point.y);
+            // Coastlines are linestrings (not closed polygons) - render as strokes
+            const coords = water.geometry.coordinates as number[][];
+            if (coords.length > 1) {
+              ctx.beginPath();
+              coords.forEach((coord: number[], i: number) => {
+                if (coord && coord.length === 2) {
+                  const point = map.latLngToContainerPoint([coord[1], coord[0]]);
+                  if (i === 0) ctx.moveTo(point.x, point.y);
+                  else ctx.lineTo(point.x, point.y);
                 }
-              }
-            });
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
+              });
+              ctx.stroke();
+            }
           }
         });
       }
 
       // Render water bodies
-      mapData.water?.forEach((water: Water) => {
+      if (featureControls.water === 'enabled') {
+        mapData.water?.forEach((water: Water) => {
         if (water.geometry && water.geometry.coordinates && water.geometry.coordinates.length > 0) {
           const type = water.type || 'water';
 
@@ -1061,32 +1092,43 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
             });
             ctx.stroke();
           } else {
-            // Render as polygon (lake, pond)
+            // Render as polygon (lake, pond, bay)
+            // coordinates format: [[[lon,lat], [lon,lat], ...]] (array of rings)
+            // First ring is outer boundary, additional rings are holes
             ctx.fillStyle = '#70b8ff';  // Darker blue for visibility
             ctx.strokeStyle = '#5a9fd6';  // Darker border
             ctx.lineWidth = 0.5;
+
+            // Add all rings to a single path for proper hole handling
+            const rings = water.geometry.coordinates as number[][][];
             ctx.beginPath();
-            water.geometry.coordinates.forEach((coord: number[] | number[][], i: number) => {
-              const c = coord as number[];
-              if (c && c.length === 2) {
-                const point = map.latLngToContainerPoint([c[1], c[0]]);
-                if (i === 0) ctx.moveTo(point.x, point.y);
-                else ctx.lineTo(point.x, point.y);
+            rings.forEach((ring: number[][]) => {
+              if (ring && ring.length > 2) {
+                ring.forEach((coord: number[], i: number) => {
+                  if (coord && coord.length === 2) {
+                    const point = map.latLngToContainerPoint([coord[1], coord[0]]);
+                    if (i === 0) ctx.moveTo(point.x, point.y);
+                    else ctx.lineTo(point.x, point.y);
+                  }
+                });
+                ctx.closePath();
               }
             });
-            ctx.closePath();
-            ctx.fill();
+            // Use evenodd fill rule to handle holes properly
+            ctx.fill('evenodd');
             ctx.stroke();
           }
         }
-      });
+        });
+      }
 
       // Render roads with different colors by type
       // Increase line width at lower zoom levels for visibility
       const zoomMultiplier = zoom < 10 ? 2.5 : zoom < 12 ? 1.5 : 1;
 
-      let roadsRendered = 0;
-      mapData.roads.forEach((road: Road, idx: number) => {
+      if (featureControls.roads === 'enabled') {
+        let roadsRendered = 0;
+        mapData.roads.forEach((road: Road, idx: number) => {
         if (road.geometry && road.geometry.coordinates) {
           roadsRendered++;
           if (idx === 0) {
@@ -1134,15 +1176,17 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
           });
           ctx.stroke();
         }
-      });
+        });
 
-      console.log('Roads rendered:', roadsRendered);
+        console.log('Roads rendered:', roadsRendered);
+      }
 
       // Render buildings with subtle color variation
-      ctx.lineWidth = 0.5;
-      const buildingColors = ['#e8e8e8', '#f0f0f0', '#e0e0e0', '#ececec', '#d8d8d8'];
+      if (featureControls.buildings === 'enabled') {
+        ctx.lineWidth = 0.5;
+        const buildingColors = ['#e8e8e8', '#f0f0f0', '#e0e0e0', '#ececec', '#d8d8d8'];
 
-      mapData.buildings.forEach((building: Building, idx: number) => {
+        mapData.buildings.forEach((building: Building, idx: number) => {
         if (building.geometry && building.geometry.coordinates && building.geometry.coordinates[0]) {
           // Use index to get consistent but varied colors
           ctx.fillStyle = buildingColors[idx % buildingColors.length];
@@ -1153,9 +1197,10 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
             ? (firstCoord as unknown as number[][][])
             : [firstCoord as unknown as number[][]];
 
+          // Add all rings to a single path for proper hole handling
+          ctx.beginPath();
           rings.forEach((ring: number[][]) => {
             if (ring && ring.length > 0) {
-              ctx.beginPath();
               ring.forEach((coord: number[], i: number) => {
                 if (coord && coord.length === 2) {
                   const point = map.latLngToContainerPoint([coord[1], coord[0]]);
@@ -1164,15 +1209,17 @@ export function CanvasRenderer({ showLabels, filters: _filters }: CanvasRenderer
                 }
               });
               ctx.closePath();
-              ctx.fill();
-              ctx.stroke();
             }
           });
+          // Fill with evenodd rule for holes
+          ctx.fill('evenodd');
+          ctx.stroke();
         }
-      });
+        });
+      }
 
       // Render labels with collision detection
-      if (showLabels) {
+      if (showLabels && featureControls.labels === 'enabled') {
         ctx.fillStyle = '#000000';
         ctx.font = '14px Arial';
         ctx.textAlign = 'center';

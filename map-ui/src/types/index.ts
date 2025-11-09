@@ -69,3 +69,14 @@ export interface Palette {
   name: string
   filters: MapFilters
 }
+
+export type FeatureState = 'enabled' | 'download-only' | 'disabled';
+
+export interface FeatureControls {
+  roads: FeatureState
+  buildings: FeatureState
+  water: FeatureState
+  parks: FeatureState
+  boundaries: FeatureState
+  labels: FeatureState
+}

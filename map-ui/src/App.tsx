@@ -2,9 +2,10 @@ import { MapContainer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import './App.css';
 import { useState, useEffect, useRef } from 'react';
-import type { SearchResult, MapFilters, Palette } from './types';
+import type { SearchResult, MapFilters, Palette, FeatureControls } from './types';
 import { CanvasRenderer } from './components/CanvasRenderer';
 import { MapController } from './components/MapController';
+import { FeatureControlsPanel } from './components/FeatureControls';
 import { PRESET_PALETTES } from './constants/palettes';
 
 // Fix for default marker icon in React-Leaflet
@@ -77,6 +78,17 @@ function App() {
     const saved = localStorage.getItem('nightMode');
     return saved ? JSON.parse(saved) : false;
   });
+  const [featureControls, setFeatureControls] = useState<FeatureControls>(() => {
+    const saved = localStorage.getItem('featureControls');
+    return saved ? JSON.parse(saved) : {
+      roads: 'enabled',
+      buildings: 'enabled',
+      water: 'enabled',
+      parks: 'enabled',
+      boundaries: 'enabled',
+      labels: 'enabled'
+    };
+  });
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load last search query on mount (but don't show suggestions)
@@ -105,10 +117,12 @@ function App() {
           `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=5&dedupe=1`
         );
         const data = await response.json();
+        console.log('Search results received:', data.length, 'results');
         // Remove duplicates based on display_name
         const uniqueResults = data.filter((result: SearchResult, index: number, self: SearchResult[]) =>
           index === self.findIndex((r) => r.display_name === result.display_name)
         );
+        console.log('Setting suggestions:', uniqueResults.length, 'unique results');
         setSuggestions(uniqueResults);
         // Don't automatically show suggestions - only show when user focuses input
       } catch (error) {
@@ -223,6 +237,14 @@ function App() {
     localStorage.setItem('nightMode', JSON.stringify(nightMode));
   }, [nightMode]);
 
+  useEffect(() => {
+    localStorage.setItem('featureControls', JSON.stringify(featureControls));
+  }, [featureControls]);
+
+  const handleFeatureControlChange = (key: keyof FeatureControls, value: FeatureControls[keyof FeatureControls]) => {
+    setFeatureControls({...featureControls, [key]: value});
+  };
+
   const filterStyle = `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%) hue-rotate(${filters.hueRotate}deg) grayscale(${filters.grayscale}%)`;
 
   // Theme colors
@@ -249,7 +271,12 @@ function App() {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+            onFocus={() => {
+              console.log('Input focused, suggestions count:', suggestions.length);
+              if (suggestions.length > 0) {
+                setShowSuggestions(true);
+              }
+            }}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && suggestions.length > 0) {
@@ -299,6 +326,12 @@ function App() {
           </div>
         )}
 
+        <FeatureControlsPanel
+          controls={featureControls}
+          onChange={handleFeatureControlChange}
+          nightMode={nightMode}
+        />
+
         {/* Night Mode Toggle */}
         <div style={{ padding: '16px', marginTop: 'auto', borderTop: `1px solid ${borderColor}` }}>
           <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', color: textColor }}>
@@ -344,7 +377,7 @@ function App() {
           style={{ height: '100%', width: '100%', backgroundColor: '#70b8ff' }}
         >
           <MapController position={selectedPosition} zoom={15} bounds={selectedBounds} />
-          <CanvasRenderer showLabels={showLabels} filters={filters} />
+          <CanvasRenderer showLabels={showLabels} filters={filters} featureControls={featureControls} />
           {selectedPosition && (
             <Marker position={selectedPosition}>
               <Popup>
