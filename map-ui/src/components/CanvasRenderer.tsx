@@ -640,18 +640,15 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             geometry: {
               coordinates: el.type === 'relation' && el.members
                 ? (() => {
-                    // For multipolygon relations, concatenate all outer ways into one ring
+                    // For multipolygon relations, keep each outer way as a separate ring
+                    // Do NOT concatenate - each represents a separate polygon part
                     const outerWays = el.members
                       .filter(m => m.role === 'outer' || m.role === '')
                       .map(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || [])
                       .filter(coords => coords.length > 0);
 
-                    if (outerWays.length === 0) return [];
-                    if (outerWays.length === 1) return [outerWays[0]];
-
-                    // Concatenate all outer ways into a single ring
-                    const concatenated = outerWays.reduce((acc, way) => acc.concat(way), []);
-                    return [concatenated];
+                    // Return array of rings (each outer way is its own ring)
+                    return outerWays;
                   })()
                 : [[el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []]]
             }
