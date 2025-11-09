@@ -223,18 +223,22 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
       // At equator: zoom ~= log2(360 / latSpan)
       const approximateZoom = actualZoom || Math.log2(180 / latSpan);
 
+      // Round bbox coordinates at low zoom to reduce re-fetches on small pans
+      // At zoom < 9, round to integers (whole degrees)
+      // At zoom 9-11, round to 2 decimal places
+      // At zoom 12+, keep full precision
+      const precision = approximateZoom < 9 ? 0 : approximateZoom < 12 ? 2 : 4;
+      const roundedBbox = `${south.toFixed(precision)},${west.toFixed(precision)},${north.toFixed(precision)},${east.toFixed(precision)}`;
+
       // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
       // use a minimal query with only country boundaries to avoid timeouts
       // Also use backend boundaries for low zoom (< 9) to get better coastline detail
       // Backend has pre-processed, detailed boundaries from Natural Earth data
       if (approximateZoom < 9 || lonSpan > 200 || latSpan > 60) {
-        console.log('Using backend boundaries for better coastline detail:', { latSpan, lonSpan, zoom: approximateZoom });
-
-        // Skip if we just did this query
-        const cacheKey = `large-bbox-${Math.round(south)}-${Math.round(west)}-${Math.round(north)}-${Math.round(east)}`;
+        // For world/continent scale, use a static cache key since boundaries don't change
+        // This prevents re-fetching the same 258 countries on every pan
+        const cacheKey = 'world-country-boundaries';
         if (lastBboxRef.current === cacheKey) {
-          console.log('Large area boundaries already fetched, skipping');
-          setIsLoading(false);
           return;
         }
 
@@ -302,13 +306,13 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
           ]
         : [`${south - maxExpandLat},${west - maxExpandLon},${north + maxExpandLat},${east + maxExpandLon}`];
 
-      // Skip if same bbox
-      if (bbox === lastBboxRef.current) {
+      // Skip if same bbox (using rounded bbox to prevent tiny pan re-fetches)
+      if (roundedBbox === lastBboxRef.current) {
         return;
       }
 
       // Mark this bbox as being fetched to prevent overlapping queries
-      lastBboxRef.current = bbox;
+      lastBboxRef.current = roundedBbox;
 
       // Check if we're rate limited
       const now = Date.now();
@@ -833,7 +837,8 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
       if (fetchTimeoutRef.current) {
         clearTimeout(fetchTimeoutRef.current);
       }
-      fetchTimeoutRef.current = setTimeout(fetchMapData, 5000);  // Increased to 5s to avoid rate limiting
+      // Reduced debounce from 5s to 500ms - cache check is fast
+      fetchTimeoutRef.current = setTimeout(fetchMapData, 500);
     };
 
     map.on('moveend', debouncedFetch);
