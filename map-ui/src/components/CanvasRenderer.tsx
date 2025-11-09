@@ -547,6 +547,7 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
         interface OSMElement {
           type: string
+          id?: number
           tags?: Record<string, string>
           geometry?: Array<{ lat: number, lon: number }>
           members?: Array<{
@@ -634,25 +635,45 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             el.tags?.natural === 'swamp') &&
             (el.geometry || el.members)
           )
-          .map((el) => ({
-            type: el.tags?.leisure || el.tags?.landuse || el.tags?.natural || el.tags?.boundary || 'park',
-            name: el.tags?.name,
-            geometry: {
-              coordinates: el.type === 'relation' && el.members
-                ? (() => {
-                    // For multipolygon relations, keep each outer way as a separate ring
-                    // Do NOT concatenate - each represents a separate polygon part
-                    const outerWays = el.members
-                      .filter(m => m.role === 'outer' || m.role === '')
-                      .map(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || [])
-                      .filter(coords => coords.length > 0);
+          .map((el) => {
+            const parkType = el.tags?.leisure || el.tags?.landuse || el.tags?.natural || el.tags?.boundary || 'park';
+            const coords = el.type === 'relation' && el.members
+              ? (() => {
+                  // For multipolygon relations, keep each outer way as a separate ring
+                  // Do NOT concatenate - each represents a separate polygon part
+                  const outerWays = el.members
+                    .filter(m => m.role === 'outer' || m.role === '')
+                    .map(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || [])
+                    .filter(coords => coords.length > 0);
 
-                    // Return array of rings (each outer way is its own ring)
-                    return outerWays;
-                  })()
-                : [[el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []]]
-            }
-          }));
+                  // Debug logging for relations with multiple outer ways (potential multipolygon issues)
+                  if (outerWays.length > 1) {
+                    console.log(`Multipolygon park/forest detected:`, {
+                      type: parkType,
+                      name: el.tags?.name || 'unnamed',
+                      id: el.id || 'unknown',
+                      outerWayCount: outerWays.length,
+                      outerWaySizes: outerWays.map(w => w.length),
+                      firstWayBounds: outerWays[0] ? {
+                        minLon: Math.min(...outerWays[0].map(p => p[0])),
+                        maxLon: Math.max(...outerWays[0].map(p => p[0])),
+                        minLat: Math.min(...outerWays[0].map(p => p[1])),
+                        maxLat: Math.max(...outerWays[0].map(p => p[1]))
+                      } : null
+                    });
+                  }
+
+                  // Return array of rings (each outer way is its own ring)
+                  return outerWays;
+                })()
+              : [[el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []]];
+
+            return {
+              type: parkType,
+              name: el.tags?.name,
+              geometry: { coordinates: coords }
+            };
+          });
 
         const filteredParks = parks.filter(p => p.geometry.coordinates.length > 0 && p.geometry.coordinates[0].length > 0);
 
