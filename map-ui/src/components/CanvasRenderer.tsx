@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMap } from 'react-leaflet';
-import L from 'leaflet';
 import type { Road, Building, Water, Park, Label, Boundary, MapData, MapFilters, FeatureControls } from '../types';
 import { getCachedData, setCachedData } from '../services/cacheService';
 import { simplifyGeometry } from '../utils/geometry';
@@ -16,14 +15,7 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
   const [mapData, setMapData] = useState<MapData>({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries: [] });
   const [isLoading, setIsLoading] = useState(false);
 
-  useEffect(() => {
-    console.log('mapData updated:', {
-      roads: mapData.roads.length,
-      boundaries: mapData.boundaries.length,
-      parks: mapData.parks.length,
-      water: mapData.water.length
-    });
-  }, [mapData]);
+  // Removed excessive logging for performance
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rateLimitedUntil = useRef<number>(0);
@@ -223,8 +215,6 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       const latSpan = north - south;
 
-      console.log('Map bounds:', { south, west, north, east, latSpan, lonSpan });
-
       // Use actual map zoom instead of calculated zoom
       // This ensures query decisions match what the user sees
       const actualZoom = map.getZoom();
@@ -355,12 +345,9 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         console.log('Skipping cache for low zoom (< 10) to fetch boundaries');
       }
 
-      console.log('Fetching map data for bbox:', bbox, 'zoom level:', approximateZoom.toFixed(1));
-
       // Increment query counter now that we're actually starting a fetch
       queryCounterRef.current += 1;
       const currentQueryId = queryCounterRef.current;
-      console.log('Starting new query with ID:', currentQueryId);
 
       setIsLoading(true);
 
@@ -480,9 +467,9 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
         const wayQuery = allQueryParts.length > 0 ? allQueryParts.join('\n            ') : '';
 
-        // Relation queries (for large protected areas) - skip at very low zoom
+        // Relation queries (for large protected areas) - skip at very low zoom and at high zoom (too expensive)
         // Generate relation queries for all expanded bboxes
-        const relationQueryParts = !skipRelations && !onlyMajorFeatures
+        const relationQueryParts = !skipRelations && !onlyMajorFeatures && approximateZoom < 14
           ? expandedBboxes.flatMap(expBbox => [
               `rel(${expBbox})["natural"="water"];`,
               `rel(${expBbox})["leisure"="nature_reserve"];`,
@@ -510,9 +497,6 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
           out geom;
           ${relationQuery}
         `;
-
-        console.log('Query for zoom', approximateZoom.toFixed(1), 'Query parts:', allQueryParts.length);
-        console.log('Full query:', query);
 
         const response = await fetch('https://overpass-api.de/api/interpreter', {
           method: 'POST',
@@ -563,13 +547,6 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         }
 
         const data: OSMResponse = await response.json();
-
-        console.log('Raw API response:', {
-          totalElements: data.elements.length,
-          elementTypes: [...new Set(data.elements.map(el => el.type))],
-          adminLevels: [...new Set(data.elements.filter(el => el.tags?.admin_level).map(el => el.tags?.admin_level))],
-          coastlines: data.elements.filter(el => el.tags?.natural === 'coastline').length
-        });
 
         // Calculate simplification tolerance based on zoom level
         // Higher tolerance (more simplification) at lower zoom levels
@@ -650,24 +627,8 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
                     .map(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || [])
                     .filter(coords => coords.length > 0);
 
-                  // Debug logging for relations with multiple outer ways or any inner ways
-                  if (outerWays.length > 1 || innerWays.length > 0) {
-                    console.log(`Multipolygon park/forest detected:`, {
-                      type: parkType,
-                      name: el.tags?.name || 'unnamed',
-                      id: el.id || 'unknown',
-                      outerWayCount: outerWays.length,
-                      innerWayCount: innerWays.length,
-                      outerWaySizes: outerWays.map(w => w.length),
-                      innerWaySizes: innerWays.map(w => w.length),
-                      firstOuterWayBounds: outerWays[0] ? {
-                        minLon: Math.min(...outerWays[0].map(p => p[0])),
-                        maxLon: Math.max(...outerWays[0].map(p => p[0])),
-                        minLat: Math.min(...outerWays[0].map(p => p[1])),
-                        maxLat: Math.max(...outerWays[0].map(p => p[1]))
-                      } : null
-                    });
-                  }
+                  // Debug logging disabled for performance
+                  // Enable if debugging specific multipolygon issues
 
                   // Try to connect outer ways that share endpoints (they form one polygon)
                   // Keep disconnected outer ways as separate rings (separate polygon parts)
@@ -852,20 +813,7 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
         const mapData = { roads, buildings, water, parks: filteredParks, labels, boundaries };
 
-        // Debug: log what we found
-        console.log('Features found:', {
-          roads: roads.length,
-          buildings: buildings.length,
-          parks: filteredParks.length,
-          water: water.length,
-          labels: labels.length,
-          boundaries: boundaries.length,
-          parkTypes: [...new Set(filteredParks.map((p: Park) => p.type))],
-          waterTypes: [...new Set(water.map((w: Water) => w.type))]
-        });
-
         // Only update state if this is still the most recent query
-        console.log('Query completed:', { currentQueryId, currentRef: queryCounterRef.current, bbox });
         if (currentQueryId === queryCounterRef.current) {
           setMapData(mapData);
 
@@ -916,10 +864,6 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       const zoom = map.getZoom();
-      const hasData = (mapData.roads?.length || 0) > 0 ||
-                      (mapData.parks?.length || 0) > 0 ||
-                      (mapData.water?.length || 0) > 0 ||
-                      (mapData.boundaries?.length || 0) > 0;
 
       // Determine background based on what data we have
       const hasCoastlines = mapData.water?.some((w: Water) => w.type === 'coastline') || false;
@@ -942,39 +886,18 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         // Otherwise, paint white background - water features will paint blue on top
         if (hasCoastlines) {
           ctx.fillStyle = '#70b8ff';  // Ocean blue for islands/coastal areas
-          console.log('Painting ocean blue background for coastlines at zoom:', zoom);
         } else {
           ctx.fillStyle = '#ffffff';  // White base for inland areas
-          console.log('Painting white background at zoom:', zoom);
         }
       }
 
-      console.log('Painting background with color:', ctx.fillStyle, 'at zoom:', zoom);
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      console.log('Rendering canvas:', {
-        canvasSize: { width: canvas.width, height: canvas.height },
-        zoom,
-        hasData,
-        dataLength: {
-          roads: mapData.roads?.length || 0,
-          parks: mapData.parks?.length || 0,
-          water: mapData.water?.length || 0,
-          boundaries: mapData.boundaries?.length || 0
-        },
-        willRenderBoundaries: zoom < 6 && mapData.boundaries && mapData.boundaries.length > 0,
-        actualZoom: zoom,
-        zoomCheck: zoom < 6,
-        boundariesExist: !!mapData.boundaries,
-        boundariesLength: mapData.boundaries?.length
-      });
 
       // Render boundaries (countries at zoom < 6, states at zoom 6-11)
       if (featureControls.boundaries === 'enabled' && zoom < 11 && mapData.boundaries && mapData.boundaries.length > 0) {
         // Fill boundaries to show land at zoom < 9, OR at zoom 9+ if we have coastlines (ocean background)
         // At zoom 9+ with no coastlines (inland), only stroke (outline)
         const shouldFillBoundaries = zoom < 9 || (zoom >= 9 && hasCoastlines);
-        console.log('About to render', mapData.boundaries.length, 'boundaries', 'shouldFill:', shouldFillBoundaries, 'zoom:', zoom, 'hasCoastlines:', hasCoastlines);
 
         if (shouldFillBoundaries) {
           ctx.fillStyle = '#f0ead6';  // Beige land color
@@ -982,12 +905,7 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         ctx.strokeStyle = '#999999';  // Gray boundary
         ctx.lineWidth = zoom < 9 ? 2 : 1;  // Thinner line at high zoom
 
-        let boundariesRendered = 0;
         mapData.boundaries.forEach((boundary: Boundary) => {
-          boundariesRendered++;
-          if (boundariesRendered === 1) {
-            console.log('First boundary to render:', boundary.name, 'coords:', boundary.geometry.coordinates.length);
-          }
           if (boundary.geometry && boundary.geometry.coordinates) {
             // Start a single path for this entire boundary (all its rings)
             ctx.beginPath();
@@ -1025,22 +943,15 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
                 // Add each segment to the same path (for proper hole handling)
                 segments.forEach((segment: number[][]) => {
                   if (segment.length > 2) {
-                    let firstPoint: { coord: number[], point: L.Point, canvasSize: { width: number, height: number } } | null = null;
                     segment.forEach((coord: number[], i: number) => {
                       const point = map.latLngToContainerPoint([coord[1], coord[0]]);
                       if (i === 0) {
-                        firstPoint = { coord, point, canvasSize: { width: canvas.width, height: canvas.height } };
                         ctx.moveTo(point.x, point.y);
                       } else {
                         ctx.lineTo(point.x, point.y);
                       }
                     });
                     ctx.closePath();
-
-                    // Log first point of first segment for debugging
-                    if (boundariesRendered === 1 && firstPoint) {
-                      console.log('First boundary first point:', firstPoint);
-                    }
                   }
                 });
               }
@@ -1219,18 +1130,8 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
       const zoomMultiplier = zoom < 10 ? 2.5 : zoom < 12 ? 1.5 : 1;
 
       if (featureControls.roads === 'enabled') {
-        let roadsRendered = 0;
-        mapData.roads.forEach((road: Road, idx: number) => {
+        mapData.roads.forEach((road: Road) => {
         if (road.geometry && road.geometry.coordinates) {
-          roadsRendered++;
-          if (idx === 0) {
-            // Log first road for debugging
-            console.log('First road:', {
-              type: road.type,
-              coordCount: road.geometry.coordinates.length,
-              firstCoord: road.geometry.coordinates[0]
-            });
-          }
           // Color roads by type (highway, residential, etc.)
           const type = road.type || 'default';
           switch(type) {
@@ -1269,8 +1170,6 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
           ctx.stroke();
         }
         });
-
-        console.log('Roads rendered:', roadsRendered);
       }
 
       // Render buildings with subtle color variation
@@ -1358,11 +1257,13 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
       render();
     };
 
-    map.on('move zoom viewreset', handleMapUpdate);
+    // Use 'moveend' instead of 'move' to avoid rendering on every pan frame
+    // This dramatically improves panning performance
+    map.on('moveend zoom viewreset', handleMapUpdate);
     render();
 
     return () => {
-      map.off('move zoom viewreset', handleMapUpdate);
+      map.off('moveend zoom viewreset', handleMapUpdate);
     };
   }, [map, mapData, showLabels]);
 
