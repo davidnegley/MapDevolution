@@ -861,7 +861,11 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    let animationFrameId: number | null = null;
+    let isRenderScheduled = false;
+
     const render = () => {
+      isRenderScheduled = false;
       const size = map.getSize();
       canvas.width = size.x;
       canvas.height = size.y;
@@ -1259,18 +1263,26 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
     };
 
     const handleMapUpdate = () => {
-      render();
+      // Use requestAnimationFrame for smooth rendering
+      // This throttles rendering to ~60fps and syncs with browser paint
+      if (!isRenderScheduled) {
+        isRenderScheduled = true;
+        animationFrameId = requestAnimationFrame(render);
+      }
     };
 
-    // Use 'moveend' instead of 'move' to avoid rendering on every pan frame
-    // This dramatically improves panning performance
-    map.on('moveend zoom viewreset', handleMapUpdate);
+    // Use 'move' for fluid real-time rendering during panning
+    // requestAnimationFrame throttles this to 60fps automatically
+    map.on('move zoom viewreset', handleMapUpdate);
     render();
 
     return () => {
-      map.off('moveend zoom viewreset', handleMapUpdate);
+      map.off('move zoom viewreset', handleMapUpdate);
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
     };
-  }, [map, mapData, showLabels]);
+  }, [map, mapData, showLabels, featureControls]);
 
   return (
     <>
