@@ -639,22 +639,28 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             const parkType = el.tags?.leisure || el.tags?.landuse || el.tags?.natural || el.tags?.boundary || 'park';
             const coords = el.type === 'relation' && el.members
               ? (() => {
-                  // For multipolygon relations, keep each outer way as a separate ring
-                  // Do NOT concatenate - each represents a separate polygon part
+                  // Extract outer and inner ways separately
                   const outerWays = el.members
                     .filter(m => m.role === 'outer' || m.role === '')
                     .map(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || [])
                     .filter(coords => coords.length > 0);
 
-                  // Debug logging for relations with multiple outer ways (potential multipolygon issues)
-                  if (outerWays.length > 1) {
+                  const innerWays = el.members
+                    .filter(m => m.role === 'inner')
+                    .map(m => m.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || [])
+                    .filter(coords => coords.length > 0);
+
+                  // Debug logging for relations with multiple outer ways or any inner ways
+                  if (outerWays.length > 1 || innerWays.length > 0) {
                     console.log(`Multipolygon park/forest detected:`, {
                       type: parkType,
                       name: el.tags?.name || 'unnamed',
                       id: el.id || 'unknown',
                       outerWayCount: outerWays.length,
+                      innerWayCount: innerWays.length,
                       outerWaySizes: outerWays.map(w => w.length),
-                      firstWayBounds: outerWays[0] ? {
+                      innerWaySizes: innerWays.map(w => w.length),
+                      firstOuterWayBounds: outerWays[0] ? {
                         minLon: Math.min(...outerWays[0].map(p => p[0])),
                         maxLon: Math.max(...outerWays[0].map(p => p[0])),
                         minLat: Math.min(...outerWays[0].map(p => p[1])),
@@ -663,8 +669,76 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
                     });
                   }
 
-                  // Return array of rings (each outer way is its own ring)
-                  return outerWays;
+                  // Try to connect outer ways that share endpoints (they form one polygon)
+                  // Keep disconnected outer ways as separate rings (separate polygon parts)
+                  if (outerWays.length === 0) return [];
+                  if (outerWays.length === 1 && innerWays.length === 0) return outerWays;
+
+                  // Group connected outer ways together
+                  const rings: number[][][] = [];
+                  const used = new Set<number>();
+
+                  for (let i = 0; i < outerWays.length; i++) {
+                    if (used.has(i)) continue;
+
+                    let currentRing = [...outerWays[i]];
+                    used.add(i);
+
+                    // Try to connect more ways to this ring
+                    let foundConnection = true;
+                    while (foundConnection) {
+                      foundConnection = false;
+                      const ringStart = currentRing[0];
+                      const ringEnd = currentRing[currentRing.length - 1];
+
+                      for (let j = 0; j < outerWays.length; j++) {
+                        if (used.has(j)) continue;
+
+                        const way = outerWays[j];
+                        const wayStart = way[0];
+                        const wayEnd = way[way.length - 1];
+
+                        // Check if this way connects to the end of current ring
+                        if (Math.abs(ringEnd[0] - wayStart[0]) < 0.0001 && Math.abs(ringEnd[1] - wayStart[1]) < 0.0001) {
+                          currentRing = [...currentRing.slice(0, -1), ...way];
+                          used.add(j);
+                          foundConnection = true;
+                          break;
+                        }
+                        // Check if this way connects reversed
+                        else if (Math.abs(ringEnd[0] - wayEnd[0]) < 0.0001 && Math.abs(ringEnd[1] - wayEnd[1]) < 0.0001) {
+                          currentRing = [...currentRing.slice(0, -1), ...way.reverse()];
+                          used.add(j);
+                          foundConnection = true;
+                          break;
+                        }
+                        // Check if this way connects to the start of current ring
+                        else if (Math.abs(ringStart[0] - wayEnd[0]) < 0.0001 && Math.abs(ringStart[1] - wayEnd[1]) < 0.0001) {
+                          currentRing = [...way.slice(0, -1), ...currentRing];
+                          used.add(j);
+                          foundConnection = true;
+                          break;
+                        }
+                        // Check if this way connects to start reversed
+                        else if (Math.abs(ringStart[0] - wayStart[0]) < 0.0001 && Math.abs(ringStart[1] - wayStart[1]) < 0.0001) {
+                          currentRing = [...way.reverse().slice(0, -1), ...currentRing];
+                          used.add(j);
+                          foundConnection = true;
+                          break;
+                        }
+                      }
+                    }
+
+                    rings.push(currentRing);
+                  }
+
+                  // Add inner ways (holes) after all outer rings
+                  // Inner ways should be added as-is (they represent holes)
+                  innerWays.forEach(innerWay => {
+                    rings.push(innerWay);
+                  });
+
+                  return rings;
                 })()
               : [[el.geometry?.filter(pt => pt && pt.lon != null && pt.lat != null).map(pt => [pt.lon, pt.lat]) || []]];
 
