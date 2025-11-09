@@ -866,9 +866,14 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
     const render = () => {
       isRenderScheduled = false;
+      const startTime = performance.now();
       const size = map.getSize();
-      canvas.width = size.x;
-      canvas.height = size.y;
+
+      // Only resize canvas if size actually changed (resizing is expensive!)
+      if (canvas.width !== size.x || canvas.height !== size.y) {
+        canvas.width = size.x;
+        canvas.height = size.y;
+      }
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -1259,6 +1264,11 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             }
           }
         });
+      }
+
+      const renderTime = performance.now() - startTime;
+      if (renderTime > 16) {  // Slower than 60fps
+        console.warn(`Slow render: ${renderTime.toFixed(1)}ms`);
       }
     };
 
