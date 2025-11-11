@@ -375,11 +375,25 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
           // At zoom >= 11, fetch all features for custom rendering
           if (approximateZoom < 11) {
             // Minimal query for low zoom
-            // At zoom < 9, ONLY query boundaries - any way queries cause timeouts with boundary relations
-            // At zoom 9-10, add roads and water features
-            if (approximateZoom >= 9) {
+            // At zoom 6-8, add some basic features (major roads, large water bodies, forests)
+            // At zoom 9-10, add more detail (all highways, waterways)
+            if (approximateZoom >= 6 && approximateZoom < 9) {
+              // Country-scale view: show major features only
               if (featureControls.roads !== 'disabled') {
                 queryParts.push(`way["highway"~"motorway|trunk"](${singleBbox});`);
+              }
+              if (featureControls.water !== 'disabled') {
+                queryParts.push(`way["waterway"~"river"](${singleBbox});`); // Major rivers only
+                queryParts.push(`way["natural"="water"]["water"~"lake|reservoir"](${singleBbox});`); // Large water bodies
+              }
+              if (featureControls.parks !== 'disabled') {
+                queryParts.push(`way["landuse"="forest"](${singleBbox});`);
+                queryParts.push(`way["natural"="wood"](${singleBbox});`);
+                queryParts.push(`way["boundary"="national_park"](${singleBbox});`);
+              }
+            } else if (approximateZoom >= 9) {
+              if (featureControls.roads !== 'disabled') {
+                queryParts.push(`way["highway"~"motorway|trunk|primary"](${singleBbox});`);
               }
               if (featureControls.water !== 'disabled') {
                 queryParts.push(`way["waterway"](${singleBbox});`);
