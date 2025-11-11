@@ -27,6 +27,7 @@ function App() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
+  const inputFocusedRef = useRef(false);
   const [selectedPosition, setSelectedPosition] = useState<[number, number] | null>(() => {
     const saved = localStorage.getItem('lastPosition');
     if (saved) {
@@ -124,9 +125,10 @@ function App() {
         );
         console.log('Setting suggestions:', uniqueResults.length, 'unique results');
         setSuggestions(uniqueResults);
-        const shouldShow = uniqueResults.length > 0;
-        console.log('Setting showSuggestions to:', shouldShow);
-        setShowSuggestions(shouldShow);
+        // Only show suggestions if input is currently focused
+        if (inputFocusedRef.current && uniqueResults.length > 0) {
+          setShowSuggestions(true);
+        }
       } catch (error) {
         console.error('Error fetching suggestions:', error);
       }
@@ -278,11 +280,15 @@ function App() {
               onChange={(e) => setSearchQuery(e.target.value)}
               onFocus={() => {
                 console.log('Input focused, suggestions count:', suggestions.length);
+                inputFocusedRef.current = true;
                 if (suggestions.length > 0) {
                   setShowSuggestions(true);
                 }
               }}
-              onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+              onBlur={() => {
+                inputFocusedRef.current = false;
+                setTimeout(() => setShowSuggestions(false), 200);
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && suggestions.length > 0) {
                   handleSelectAddress(suggestions[0]);
