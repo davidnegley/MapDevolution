@@ -301,7 +301,10 @@ function App() {
           <div style={{
             maxHeight: '300px',
             overflowY: 'auto',
-            borderBottom: `1px solid ${borderColor}`
+            backgroundColor: bgColor,
+            border: `1px solid ${borderColor}`,
+            borderTop: 'none',
+            borderRadius: '0 0 4px 4px'
           }}>
             {suggestions.map((result) => {
               const cleanedName = result.display_name.replace(/^(\d+),\s*/, '$1 ');
@@ -313,6 +316,7 @@ function App() {
                     padding: '12px 16px',
                     cursor: 'pointer',
                     borderBottom: `1px solid ${borderColor}`,
+                    backgroundColor: bgColor,
                     color: textColor,
                     fontSize: '13px'
                   }}
