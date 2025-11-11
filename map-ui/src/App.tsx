@@ -269,50 +269,57 @@ function App() {
       }}>
         <div style={{ padding: '16px', borderBottom: `1px solid ${borderColor}` }}>
           <h2 style={{ margin: '0 0 12px 0', fontSize: '18px', color: textColor, fontWeight: 'bold' }}>Search Location</h2>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => {
-              console.log('Input focused, suggestions count:', suggestions.length);
-              if (suggestions.length > 0) {
-                setShowSuggestions(true);
-              }
-            }}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && suggestions.length > 0) {
-                handleSelectAddress(suggestions[0]);
-              }
-            }}
-            placeholder="Search for an address..."
-            style={{
-              width: '100%',
-              padding: '10px',
-              fontSize: '14px',
-              border: `1px solid ${borderColor}`,
-              borderRadius: '4px',
-              backgroundColor: bgColor,
-              color: textColor,
-              boxSizing: 'border-box'
-            }}
-          />
-        </div>
 
-        {/* Debug logging moved to effect */}
-        {(() => {
-          console.log('Render: showSuggestions=', showSuggestions, 'suggestions.length=', suggestions.length);
-          return null;
-        })()}
+          {/* Search input wrapper with relative positioning for dropdown */}
+          <div style={{ position: 'relative' }}>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => {
+                console.log('Input focused, suggestions count:', suggestions.length);
+                if (suggestions.length > 0) {
+                  setShowSuggestions(true);
+                }
+              }}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && suggestions.length > 0) {
+                  handleSelectAddress(suggestions[0]);
+                }
+              }}
+              placeholder="Search for an address..."
+              style={{
+                width: '100%',
+                padding: '10px',
+                fontSize: '14px',
+                border: `1px solid ${borderColor}`,
+                borderRadius: '4px',
+                backgroundColor: bgColor,
+                color: textColor,
+                boxSizing: 'border-box'
+              }}
+            />
 
-        {showSuggestions && suggestions.length > 0 && (
+            {/* Debug logging moved to effect */}
+            {(() => {
+              console.log('Render: showSuggestions=', showSuggestions, 'suggestions.length=', suggestions.length);
+              return null;
+            })()}
+
+            {showSuggestions && suggestions.length > 0 && (
           <div style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
             maxHeight: '300px',
             overflowY: 'auto',
             backgroundColor: bgColor,
             border: `1px solid ${borderColor}`,
             borderTop: 'none',
-            borderRadius: '0 0 4px 4px'
+            borderRadius: '0 0 4px 4px',
+            zIndex: 1000
           }}>
             {suggestions.map((result) => {
               const cleanedName = result.display_name.replace(/^(\d+),\s*/, '$1 ');
@@ -337,6 +344,8 @@ function App() {
             })}
           </div>
         )}
+          </div>
+        </div>
 
         <FeatureControlsPanel
           controls={featureControls}
