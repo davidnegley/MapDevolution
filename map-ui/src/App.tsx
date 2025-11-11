@@ -124,7 +124,9 @@ function App() {
         );
         console.log('Setting suggestions:', uniqueResults.length, 'unique results');
         setSuggestions(uniqueResults);
-        setShowSuggestions(uniqueResults.length > 0);
+        const shouldShow = uniqueResults.length > 0;
+        console.log('Setting showSuggestions to:', shouldShow);
+        setShowSuggestions(shouldShow);
       } catch (error) {
         console.error('Error fetching suggestions:', error);
       }
@@ -296,6 +298,12 @@ function App() {
             }}
           />
         </div>
+
+        {/* Debug logging moved to effect */}
+        {(() => {
+          console.log('Render: showSuggestions=', showSuggestions, 'suggestions.length=', suggestions.length);
+          return null;
+        })()}
 
         {showSuggestions && suggestions.length > 0 && (
           <div style={{
