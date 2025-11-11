@@ -124,7 +124,7 @@ function App() {
         );
         console.log('Setting suggestions:', uniqueResults.length, 'unique results');
         setSuggestions(uniqueResults);
-        // Don't automatically show suggestions - only show when user focuses input
+        setShowSuggestions(uniqueResults.length > 0);
       } catch (error) {
         console.error('Error fetching suggestions:', error);
       }
