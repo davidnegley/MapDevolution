@@ -233,10 +233,10 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
       // use a minimal query with only country boundaries to avoid timeouts
-      // Also use backend boundaries for very low zoom (< 6) for world/continent views
+      // Use backend boundaries for zoom < 9 (world/continent/country views)
       // Backend has pre-processed, detailed boundaries from Natural Earth data
-      // At zoom 6-8, we use Overpass to get features (roads, water, forests)
-      if (approximateZoom < 6 || lonSpan > 200 || latSpan > 60) {
+      // At zoom 9+, we use Overpass to get detailed features
+      if (approximateZoom < 9 || lonSpan > 200 || latSpan > 60) {
         // For world/continent scale, use a static cache key since boundaries don't change
         // This prevents re-fetching the same 258 countries on every pan
         const cacheKey = 'world-country-boundaries';
