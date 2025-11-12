@@ -233,10 +233,10 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
       // use a minimal query with only country boundaries to avoid timeouts
-      // Use backend boundaries for zoom < 9 (world/continent/country views)
-      // Backend has pre-processed, detailed boundaries from Natural Earth data
-      // At zoom 9+, we use Overpass to get detailed features
-      if (approximateZoom < 9 || lonSpan > 200 || latSpan > 60) {
+      // Use backend boundaries for very low zoom (< 7) or very large areas
+      // At zoom 7-8, we'll try Overpass with just major roads (lightweight)
+      // At zoom 9+, we use Overpass for full detail
+      if (approximateZoom < 7 || lonSpan > 200 || latSpan > 60) {
         // For world/continent scale, use a static cache key since boundaries don't change
         // This prevents re-fetching the same 258 countries on every pan
         const cacheKey = 'world-country-boundaries';
@@ -379,21 +379,12 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
           // At zoom >= 11, fetch all features for custom rendering
           if (approximateZoom < 11) {
             // Minimal query for low zoom
-            // At zoom 6-8, add some basic features (major roads, large water bodies, forests)
+            // At zoom 7-8, add just major highways (most impactful, least data)
             // At zoom 9-10, add more detail (all highways, waterways)
-            if (approximateZoom >= 6 && approximateZoom < 9) {
-              // Country-scale view: show major features only
+            if (approximateZoom >= 7 && approximateZoom < 9) {
+              // Country-scale view: show only major highways to avoid timeout
               if (featureControls.roads !== 'disabled') {
-                queryParts.push(`way["highway"~"motorway|trunk"](${singleBbox});`);
-              }
-              if (featureControls.water !== 'disabled') {
-                queryParts.push(`way["waterway"~"river"](${singleBbox});`); // Major rivers only
-                queryParts.push(`way["natural"="water"]["water"~"lake|reservoir"](${singleBbox});`); // Large water bodies
-              }
-              if (featureControls.parks !== 'disabled') {
-                queryParts.push(`way["landuse"="forest"](${singleBbox});`);
-                queryParts.push(`way["natural"="wood"](${singleBbox});`);
-                queryParts.push(`way["boundary"="national_park"](${singleBbox});`);
+                queryParts.push(`way["highway"="motorway"](${singleBbox});`);
               }
             } else if (approximateZoom >= 9) {
               if (featureControls.roads !== 'disabled') {
