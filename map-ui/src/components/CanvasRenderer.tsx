@@ -309,10 +309,12 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       // Skip if same bbox (using rounded bbox to prevent tiny pan re-fetches)
       if (roundedBbox === lastBboxRef.current) {
+        console.log('Skipping duplicate fetch for same bbox:', roundedBbox);
         return;
       }
 
-      // Mark this bbox as being fetched to prevent overlapping queries
+      // Mark this bbox as being fetched BEFORE any async operations
+      // This prevents double-fetching in React StrictMode
       lastBboxRef.current = roundedBbox;
 
       // Check if we're rate limited
