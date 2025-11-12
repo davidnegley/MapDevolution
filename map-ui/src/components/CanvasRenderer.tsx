@@ -14,6 +14,7 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
   const map = useMap();
   const [mapData, setMapData] = useState<MapData>({ roads: [], buildings: [], water: [], parks: [], labels: [], boundaries: [] });
   const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Removed excessive logging for performance
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -535,6 +536,8 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         // Handle gateway timeout - use cached data if available
         if (response.status === 504) {
           console.warn('Overpass API timeout. Using cached data if available.');
+          setErrorMessage('Overpass API timeout - try zooming in or waiting a moment');
+          setTimeout(() => setErrorMessage(null), 5000);
           setIsLoading(false);
           return;
         }
@@ -542,6 +545,8 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         // Handle bad request (query too large) - use cached data if available
         if (response.status === 400) {
           console.warn('Overpass API rejected query (area too large). Using cached data if available.');
+          setErrorMessage('Query area too large - try zooming in');
+          setTimeout(() => setErrorMessage(null), 5000);
           setIsLoading(false);
           return;
         }
@@ -1385,6 +1390,25 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
           fontSize: '14px'
         }}>
           Loading map data...
+        </div>
+      )}
+      {errorMessage && (
+        <div style={{
+          position: 'absolute',
+          bottom: '20px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          backgroundColor: 'rgba(220, 53, 69, 0.9)',
+          color: 'white',
+          padding: '12px 24px',
+          borderRadius: '8px',
+          zIndex: 500,
+          fontSize: '14px',
+          maxWidth: '400px',
+          textAlign: 'center',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.3)'
+        }}>
+          {errorMessage}
         </div>
       )}
     </>
