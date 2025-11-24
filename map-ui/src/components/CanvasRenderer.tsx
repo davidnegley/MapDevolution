@@ -216,6 +216,8 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       const latSpan = north - south;
 
+      console.log('Fetch bbox:', { south, west, north, east, latSpan, lonSpan });
+
       // Use actual map zoom instead of calculated zoom
       // This ensures query decisions match what the user sees
       const actualZoom = map.getZoom();
@@ -233,10 +235,9 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
       // use a minimal query with only country boundaries to avoid timeouts
-      // Use backend boundaries for very low zoom (< 7) or very large areas
-      // At zoom 7-8, we'll try Overpass with just major roads (lightweight)
+      // Use backend boundaries for zoom < 9 to avoid Overpass timeouts
       // At zoom 9+, we use Overpass for full detail
-      if (approximateZoom < 7 || lonSpan > 200 || latSpan > 60) {
+      if (approximateZoom < 9 || lonSpan > 200 || latSpan > 60) {
         // For world/continent scale, use a static cache key since boundaries don't change
         // This prevents re-fetching the same 258 countries on every pan
         const cacheKey = 'world-country-boundaries';
@@ -382,9 +383,13 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             // At zoom 7-8, add just major highways (most impactful, least data)
             // At zoom 9-10, add more detail (all highways, waterways)
             if (approximateZoom >= 7 && approximateZoom < 9) {
-              // Country-scale view: show only major highways to avoid timeout
+              // Country-scale view: show only major highways and water features
               if (featureControls.roads !== 'disabled') {
                 queryParts.push(`way["highway"="motorway"](${singleBbox});`);
+              }
+              // Fetch water features to distinguish ocean from land
+              if (featureControls.water !== 'disabled') {
+                queryParts.push(`way["natural"="water"](${singleBbox});`);
               }
             } else if (approximateZoom >= 9) {
               if (featureControls.roads !== 'disabled') {
@@ -445,9 +450,19 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
           // At zoom 6-8: very small bbox only (< 5° lat, < 15° lon)
           // At zoom 9+: slightly larger bbox allowed
           if (featureControls.boundaries !== 'disabled') {
-            if (approximateZoom >= 6 && approximateZoom < 9 && latSpan < 5 && lonSpan < 15) {
-              queryParts.push(`way["natural"="coastline"](${singleBbox});`);
-            } else if (approximateZoom >= 9 && latSpan < 10 && lonSpan < 30) {
+            const shouldFetchCoastline = (approximateZoom >= 6 && approximateZoom < 9 && latSpan < 5 && lonSpan < 15) ||
+                                         (approximateZoom >= 9 && latSpan < 10 && lonSpan < 30);
+            console.log('Coastline fetch decision:', {
+              approximateZoom,
+              latSpan,
+              lonSpan,
+              shouldFetch: shouldFetchCoastline,
+              reason: approximateZoom >= 6 && approximateZoom < 9 && latSpan < 5 && lonSpan < 15 ? 'zoom 6-8 ok' :
+                      approximateZoom >= 9 && latSpan < 10 && lonSpan < 30 ? 'zoom 9+ ok' :
+                      'bbox too large or zoom out of range'
+            });
+
+            if (shouldFetchCoastline) {
               queryParts.push(`way["natural"="coastline"](${singleBbox});`);
             }
 
@@ -458,12 +473,15 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
               // Admin level 2 = countries - works well even for large areas
               queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${singleBbox});`);
             } else if (approximateZoom >= 6 && approximateZoom < 9 && !bboxIsTooLarge) {
-              // Fetch state/province boundaries (admin_level 4 in US, sometimes 4-6 elsewhere)
+              // Fetch BOTH country boundaries (for natural coastline fill) AND state boundaries (for detail lines)
+              // This ensures we always show land even if state data is missing
+              queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${singleBbox});`);
               queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${singleBbox});`);
             }
 
-            // For medium zoom (9-11), also fetch state/county boundaries to show land areas
+            // For medium zoom (9-11), also fetch country + state/county boundaries
             if (approximateZoom >= 9 && approximateZoom < 11 && !bboxIsTooLarge) {
+              queryParts.push(`relation["boundary"="administrative"]["admin_level"="2"](${singleBbox});`);
               queryParts.push(`relation["boundary"="administrative"]["admin_level"~"4|5|6"](${singleBbox});`);
             }
           }
@@ -830,6 +848,13 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
         const mapData = { roads, buildings, water, parks: filteredParks, labels, boundaries };
 
+        console.log('Fetched data:', {
+          roads: roads.length,
+          water: water.length,
+          coastlines: water.filter(w => w.type === 'coastline').length,
+          boundaries: boundaries.length
+        });
+
         // Only update state if this is still the most recent query
         if (currentQueryId === queryCounterRef.current) {
           setMapData(mapData);
@@ -894,47 +919,27 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       // Determine background based on what data we have
       const hasCoastlines = mapData.water?.some((w: Water) => w.type === 'coastline') || false;
-      const hasBoundaries = (mapData.boundaries?.length || 0) > 0;
 
       // Always paint background for artistic custom rendering
-      if (zoom < 6) {
-        // At very low zoom (continent/world scale), default to ocean blue
-        // Boundaries will paint land on top
-        ctx.fillStyle = '#70b8ff';  // Ocean blue (same as inland water)
-      } else if (zoom < 9) {
-        if (hasBoundaries || hasCoastlines) {
-          ctx.fillStyle = '#70b8ff';  // Ocean blue (boundaries will show land)
-        } else {
-          ctx.fillStyle = '#f0ead6';  // Beige land color (no boundaries = probably inland)
-        }
+      if (zoom < 9) {
+        // At zoom < 9: use ocean blue background, country boundaries will paint land on top
+        // This works well for country/regional scale views (using backend simplified boundaries)
+        ctx.fillStyle = '#70b8ff';  // Ocean blue
       } else {
-        // At zoom 9+, check if we have coastlines (indicating islands/coastal areas)
-        // If so, paint ocean blue background - land will be painted on top
-        // Otherwise, paint white background - water features will paint blue on top
-        if (hasCoastlines) {
-          ctx.fillStyle = '#70b8ff';  // Ocean blue for islands/coastal areas
-        } else {
-          ctx.fillStyle = '#ffffff';  // White base for inland areas
-        }
+        // At zoom 9+: use beige/land background
+        // Water features will be painted blue on top (using Overpass detailed data)
+        ctx.fillStyle = '#f0ead6';  // Beige land background
       }
 
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       // Render boundaries (countries at zoom < 6, states at zoom 6-11)
       if (featureControls.boundaries === 'enabled' && zoom < 11 && mapData.boundaries && mapData.boundaries.length > 0) {
-        // Fill boundaries to show land at zoom < 9, OR at zoom 9+ if we have coastlines (ocean background)
-        // At zoom 9+ with no coastlines (inland), only stroke (outline)
-        const shouldFillBoundaries = zoom < 9 || (zoom >= 9 && hasCoastlines);
-        // Skip stroke at very low zoom (< 6) for performance - barely visible anyway
-        const shouldStroke = zoom >= 6;
-
-        if (shouldFillBoundaries) {
-          ctx.fillStyle = '#f0ead6';  // Beige land color
-        }
-        if (shouldStroke) {
-          ctx.strokeStyle = '#999999';  // Gray boundary
-          ctx.lineWidth = zoom < 9 ? 2 : 1;  // Thinner line at high zoom
-        }
+        // At zoom < 9, fill COUNTRY boundaries on ocean blue background (backend simplified data)
+        // At zoom 9+, fill coastlines if available (Overpass detailed data)
+        // Use viewport culling to only render visible rings (prevents distant territories)
+        const shouldFillCountries = zoom < 9 || (zoom >= 9 && hasCoastlines);
+        // const shouldStrokeStates = zoom >= 6; // TEMPORARILY DISABLED FOR DEBUGGING
 
         // Aggressive point reduction at low zoom for performance
         // At zoom 5, skip every N points to reduce coordinate transformations
@@ -947,51 +952,85 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         const viewportNorth = bounds.getNorth();
         const viewportEast = bounds.getEast();
 
-        mapData.boundaries.forEach((boundary: Boundary) => {
-          if (boundary.geometry && boundary.geometry.coordinates) {
-            // Quick bounds check - skip boundaries completely outside viewport
-            // This is approximate but fast - checks if ANY ring might be visible
-            let mightBeVisible = false;
+        // FIRST PASS: Fill COUNTRY boundaries only (not states)
+        // State boundaries should only be stroked, not filled, to avoid unnatural geometric shapes
+        if (shouldFillCountries) {
+          mapData.boundaries
+            .filter((b: Boundary) => b.type === 'country')
+            .forEach((boundary: Boundary) => {
+            if (!boundary.geometry || !boundary.geometry.coordinates) return;
+
+            // Log country boundary info for debugging
+            console.log('Filling country boundary:', boundary.name, 'rings:', boundary.geometry.coordinates.length);
+
+            // For any country, log if any of its rings fall within viewport
+            let visibleRingsCount = 0;
             for (const ring of boundary.geometry.coordinates) {
               const actualRing = ring as number[][];
               if (actualRing && actualRing.length > 0) {
-                // Check first few points for rough bounds check
                 for (let i = 0; i < Math.min(5, actualRing.length); i++) {
                   const coord = actualRing[i];
                   if (coord && coord.length === 2) {
                     const lat = coord[1];
                     const lon = coord[0];
-                    // Check if point is roughly in viewport (with margin for curves)
-                    if (lat >= viewportSouth - 20 && lat <= viewportNorth + 20 &&
-                        lon >= viewportWest - 20 && lon <= viewportEast + 20) {
-                      mightBeVisible = true;
+                    if (lat >= viewportSouth - 1 && lat <= viewportNorth + 1 &&
+                        lon >= viewportWest - 1 && lon <= viewportEast + 1) {
+                      visibleRingsCount++;
                       break;
                     }
                   }
                 }
-                if (mightBeVisible) break;
               }
             }
-            if (!mightBeVisible) return;  // Skip this boundary entirely
-            // Start a single path for this entire boundary (all its rings)
-            ctx.beginPath();
+            if (visibleRingsCount > 0) {
+              console.log(`  -> ${boundary.name}: ${visibleRingsCount}/${boundary.geometry.coordinates.length} rings visible in viewport`);
+            }
 
-            // Each element in coordinates is a ring (array of [lon, lat] pairs)
-            boundary.geometry.coordinates.forEach((ring: number[][] | number[][][]) => {
+            // IMPROVED: Check each ring individually for visibility
+            // Only render rings that are actually in or near the viewport
+            // This prevents rendering distant islands from countries like USA (Hawaii) or Mexico (Baja)
+            const visibleRings: Array<number[][]> = [];
+
+            for (const ring of boundary.geometry.coordinates) {
               const actualRing = ring as number[][];
+              if (!actualRing || actualRing.length === 0) continue;
 
+              // Check if this specific ring has any points near the viewport
+              let ringIsVisible = false;
+              for (let i = 0; i < Math.min(10, actualRing.length); i++) {
+                const coord = actualRing[i];
+                if (coord && coord.length === 2) {
+                  const lat = coord[1];
+                  const lon = coord[0];
+                  // Use very tight bounds (2 degrees) to avoid rendering distant islands
+                  // This prevents showing unrelated Caribbean nations when viewing Cuba
+                  if (lat >= viewportSouth - 2 && lat <= viewportNorth + 2 &&
+                      lon >= viewportWest - 2 && lon <= viewportEast + 2) {
+                    ringIsVisible = true;
+                    break;
+                  }
+                }
+              }
+
+              if (ringIsVisible) {
+                visibleRings.push(actualRing);
+              }
+            }
+
+            // Skip this country entirely if no rings are visible
+            if (visibleRings.length === 0) return;
+
+            ctx.beginPath();
+            visibleRings.forEach((actualRing: number[][]) => {
               if (actualRing && actualRing.length > 2) {
-                // Check for antimeridian crossing and split if needed
                 const segments: number[][][] = [];
                 let currentSegment: number[][] = [];
 
                 for (let i = 0; i < actualRing.length; i++) {
                   const coord = actualRing[i];
                   if (!coord || coord.length !== 2 || isNaN(coord[0]) || isNaN(coord[1])) continue;
-
                   if (i > 0) {
                     const prevCoord = actualRing[i - 1];
-                    // Check for antimeridian crossing (longitude jump > 180 degrees)
                     if (Math.abs(coord[0] - prevCoord[0]) > 180) {
                       if (currentSegment.length > 0) {
                         segments.push(currentSegment);
@@ -1001,26 +1040,15 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
                   }
                   currentSegment.push(coord);
                 }
+                if (currentSegment.length > 0) segments.push(currentSegment);
 
-                if (currentSegment.length > 0) {
-                  segments.push(currentSegment);
-                }
-
-                // Add each segment to the same path (for proper hole handling)
                 segments.forEach((segment: number[][]) => {
                   if (segment.length > 2) {
-                    // Apply point skipping for performance at low zoom
                     segment.forEach((coord: number[], i: number) => {
-                      // Skip intermediate points based on zoom level
-                      if (pointSkip > 1 && i > 0 && i < segment.length - 1 && i % pointSkip !== 0) {
-                        return;
-                      }
+                      if (pointSkip > 1 && i > 0 && i < segment.length - 1 && i % pointSkip !== 0) return;
                       const point = map.latLngToContainerPoint([coord[1], coord[0]]);
-                      if (i === 0) {
-                        ctx.moveTo(point.x, point.y);
-                      } else {
-                        ctx.lineTo(point.x, point.y);
-                      }
+                      if (i === 0) ctx.moveTo(point.x, point.y);
+                      else ctx.lineTo(point.x, point.y);
                     });
                     ctx.closePath();
                   }
@@ -1028,15 +1056,88 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
               }
             });
 
-            // Fill and stroke the entire boundary at once (handles holes correctly with evenodd rule)
-            if (shouldFillBoundaries) {
-              ctx.fill('evenodd');
-            }
-            if (shouldStroke) {
+            ctx.fillStyle = '#f0ead6';
+            ctx.fill('evenodd');
+          });
+        }
+
+        // SECOND PASS: Stroke state boundaries for detail
+        // TEMPORARILY DISABLED FOR DEBUGGING - let's see if country fills work correctly first
+        /*
+        if (shouldStrokeStates) {
+          mapData.boundaries
+            .filter((b: Boundary) => b.type === 'state')
+            .forEach((boundary: Boundary) => {
+              if (!boundary.geometry || !boundary.geometry.coordinates) return;
+
+              // Log state boundary info for debugging
+              console.log('Stroking state boundary:', boundary.name, 'rings:', boundary.geometry.coordinates.length);
+
+              // Quick bounds check
+              let mightBeVisible = false;
+              for (const ring of boundary.geometry.coordinates) {
+                const actualRing = ring as number[][];
+                if (actualRing && actualRing.length > 0) {
+                  for (let i = 0; i < Math.min(5, actualRing.length); i++) {
+                    const coord = actualRing[i];
+                    if (coord && coord.length === 2) {
+                      const lat = coord[1];
+                      const lon = coord[0];
+                      if (lat >= viewportSouth - 20 && lat <= viewportNorth + 20 &&
+                          lon >= viewportWest - 20 && lon <= viewportEast + 20) {
+                        mightBeVisible = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (mightBeVisible) break;
+                }
+              }
+              if (!mightBeVisible) return;
+
+              ctx.beginPath();
+              boundary.geometry.coordinates.forEach((ring: number[][] | number[][][]) => {
+                const actualRing = ring as number[][];
+                if (actualRing && actualRing.length > 2) {
+                  const segments: number[][][] = [];
+                  let currentSegment: number[][] = [];
+
+                  for (let i = 0; i < i < actualRing.length; i++) {
+                    const coord = actualRing[i];
+                    if (!coord || coord.length !== 2 || isNaN(coord[0]) || isNaN(coord[1])) continue;
+                    if (i > 0) {
+                      const prevCoord = actualRing[i - 1];
+                      if (Math.abs(coord[0] - prevCoord[0]) > 180) {
+                        if (currentSegment.length > 0) {
+                          segments.push(currentSegment);
+                          currentSegment = [];
+                        }
+                      }
+                    }
+                    currentSegment.push(coord);
+                  }
+                  if (currentSegment.length > 0) segments.push(currentSegment);
+
+                  segments.forEach((segment: number[][]) => {
+                    if (segment.length > 2) {
+                      segment.forEach((coord: number[], i: number) => {
+                        if (pointSkip > 1 && i > 0 && i < segment.length - 1 && i % pointSkip !== 0) return;
+                        const point = map.latLngToContainerPoint([coord[1], coord[0]]);
+                        if (i === 0) ctx.moveTo(point.x, point.y);
+                        else ctx.lineTo(point.x, point.y);
+                      });
+                      ctx.closePath();
+                    }
+                  });
+                }
+              });
+
+              ctx.strokeStyle = '#999999';
+              ctx.lineWidth = zoom < 9 ? 1 : 0.5;
               ctx.stroke();
-            }
-          }
-        });
+            });
+        }
+        */
       }
 
       // Separate parks into background (large protected areas) and foreground (detailed features)
