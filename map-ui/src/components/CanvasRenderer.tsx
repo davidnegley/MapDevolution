@@ -958,6 +958,12 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         const viewportNorth = bounds.getNorth();
         const viewportEast = bounds.getEast();
 
+        // Calculate zoom-dependent buffer for viewport culling
+        // At high zoom (12+): tight buffer (2 degrees) to avoid rendering distant islands
+        // At medium zoom (9-11): medium buffer (5 degrees) for regional views
+        // At low zoom (< 9): large buffer (10 degrees) for continental/multi-country views
+        const viewportBuffer = zoom >= 12 ? 2 : zoom >= 9 ? 5 : 10;
+
         // FIRST PASS: Fill COUNTRY boundaries only (not states)
         // State boundaries should only be stroked, not filled, to avoid unnatural geometric shapes
         if (shouldFillCountries) {
@@ -965,32 +971,6 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             .filter((b: Boundary) => b.type === 'country')
             .forEach((boundary: Boundary) => {
             if (!boundary.geometry || !boundary.geometry.coordinates) return;
-
-            // Log country boundary info for debugging
-            console.log('Filling country boundary:', boundary.name, 'rings:', boundary.geometry.coordinates.length);
-
-            // For any country, log if any of its rings fall within viewport
-            let visibleRingsCount = 0;
-            for (const ring of boundary.geometry.coordinates) {
-              const actualRing = ring as number[][];
-              if (actualRing && actualRing.length > 0) {
-                for (let i = 0; i < Math.min(5, actualRing.length); i++) {
-                  const coord = actualRing[i];
-                  if (coord && coord.length === 2) {
-                    const lat = coord[1];
-                    const lon = coord[0];
-                    if (lat >= viewportSouth - 1 && lat <= viewportNorth + 1 &&
-                        lon >= viewportWest - 1 && lon <= viewportEast + 1) {
-                      visibleRingsCount++;
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-            if (visibleRingsCount > 0) {
-              console.log(`  -> ${boundary.name}: ${visibleRingsCount}/${boundary.geometry.coordinates.length} rings visible in viewport`);
-            }
 
             // IMPROVED: Check each ring individually for visibility
             // Only render rings that are actually in or near the viewport
@@ -1008,10 +988,9 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
                 if (coord && coord.length === 2) {
                   const lat = coord[1];
                   const lon = coord[0];
-                  // Use very tight bounds (2 degrees) to avoid rendering distant islands
-                  // This prevents showing unrelated Caribbean nations when viewing Cuba
-                  if (lat >= viewportSouth - 2 && lat <= viewportNorth + 2 &&
-                      lon >= viewportWest - 2 && lon <= viewportEast + 2) {
+                  // Use zoom-dependent buffer to balance performance vs completeness
+                  if (lat >= viewportSouth - viewportBuffer && lat <= viewportNorth + viewportBuffer &&
+                      lon >= viewportWest - viewportBuffer && lon <= viewportEast + viewportBuffer) {
                     ringIsVisible = true;
                     break;
                   }
