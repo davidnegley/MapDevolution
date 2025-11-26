@@ -919,14 +919,20 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       // Determine background based on what data we have
       const hasCoastlines = mapData.water?.some((w: Water) => w.type === 'coastline') || false;
+      const hasBoundaries = (mapData.boundaries?.length || 0) > 0;
 
       // Always paint background for artistic custom rendering
       if (zoom < 9) {
         // At zoom < 9: use ocean blue background, country boundaries will paint land on top
         // This works well for country/regional scale views (using backend simplified boundaries)
         ctx.fillStyle = '#70b8ff';  // Ocean blue
+      } else if (hasCoastlines || hasBoundaries) {
+        // At zoom 9+: if we have coastlines or boundaries, start with ocean blue
+        // Then fill land areas on top using coastlines/boundaries
+        // This works for atolls and islands surrounded by water
+        ctx.fillStyle = '#70b8ff';  // Ocean blue
       } else {
-        // At zoom 9+: use beige/land background
+        // At zoom 9+: use beige/land background as default
         // Water features will be painted blue on top (using Overpass detailed data)
         ctx.fillStyle = '#f0ead6';  // Beige land background
       }
@@ -1221,18 +1227,83 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
       // Render detailed foreground parks (wetlands, forests, etc.)
       foregroundParks.forEach(renderPark);
 
-      // Render coastlines as lines (not filled) - OSM coastlines are linestrings, not polygons
+      // Render coastlines - fill land areas and stroke boundaries
       if (featureControls.boundaries === 'enabled' && zoom >= 9 && hasCoastlines) {
-        ctx.strokeStyle = '#888888';  // Gray coastline
-        ctx.lineWidth = 2;
+        // First pass: fill land areas defined by coastlines
+        ctx.fillStyle = '#f0ead6';  // Beige land color
 
         mapData.water?.forEach((water: Water) => {
           if (water.geometry && water.geometry.coordinates && water.geometry.coordinates.length > 0 && water.type === 'coastline') {
-            // Coastlines are linestrings (not closed polygons) - render as strokes
-            const coords = water.geometry.coordinates as number[][];
-            if (coords.length > 1) {
+            // Check if this is a polygon (closed) or linestring (open)
+            const coords = water.geometry.coordinates;
+
+            // If coordinates are in polygon format [[[lon,lat],...]]
+            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0]) && typeof coords[0][0][0] === 'number') {
+              const rings = coords as number[][][];
               ctx.beginPath();
-              coords.forEach((coord: number[], i: number) => {
+              rings.forEach((ring: number[][]) => {
+                if (ring && ring.length > 2) {
+                  ring.forEach((coord: number[], i: number) => {
+                    if (coord && coord.length === 2) {
+                      const point = map.latLngToContainerPoint([coord[1], coord[0]]);
+                      if (i === 0) ctx.moveTo(point.x, point.y);
+                      else ctx.lineTo(point.x, point.y);
+                    }
+                  });
+                  ctx.closePath();
+                }
+              });
+              ctx.fill('evenodd');
+            }
+            // If coordinates are in linestring format [[lon,lat],...]
+            else if (Array.isArray(coords[0]) && typeof coords[0][0] === 'number') {
+              const lineCoords = coords as number[][];
+              if (lineCoords.length > 2) {
+                // Check if the linestring is closed (first point = last point)
+                const first = lineCoords[0];
+                const last = lineCoords[lineCoords.length - 1];
+                const isClosed = Math.abs(first[0] - last[0]) < 0.0001 && Math.abs(first[1] - last[1]) < 0.0001;
+
+                if (isClosed) {
+                  // Closed linestring - fill as land
+                  ctx.beginPath();
+                  lineCoords.forEach((coord: number[], i: number) => {
+                    if (coord && coord.length === 2) {
+                      const point = map.latLngToContainerPoint([coord[1], coord[0]]);
+                      if (i === 0) ctx.moveTo(point.x, point.y);
+                      else ctx.lineTo(point.x, point.y);
+                    }
+                  });
+                  ctx.closePath();
+                  ctx.fill();
+                }
+              }
+            }
+          }
+        });
+
+        // Second pass: stroke coastline boundaries
+        ctx.strokeStyle = '#888888';  // Gray coastline border
+        ctx.lineWidth = 1.5;
+
+        mapData.water?.forEach((water: Water) => {
+          if (water.geometry && water.geometry.coordinates && water.geometry.coordinates.length > 0 && water.type === 'coastline') {
+            const coords = water.geometry.coordinates;
+
+            // Handle both polygon and linestring formats
+            let lineCoords: number[][] | null = null;
+
+            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0]) && typeof coords[0][0][0] === 'number') {
+              // Polygon format - get first ring
+              lineCoords = (coords as number[][][])[0];
+            } else if (Array.isArray(coords[0]) && typeof coords[0][0] === 'number') {
+              // Linestring format
+              lineCoords = coords as number[][];
+            }
+
+            if (lineCoords && lineCoords.length > 1) {
+              ctx.beginPath();
+              lineCoords.forEach((coord: number[], i: number) => {
                 if (coord && coord.length === 2) {
                   const point = map.latLngToContainerPoint([coord[1], coord[0]]);
                   if (i === 0) ctx.moveTo(point.x, point.y);
