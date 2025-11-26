@@ -235,10 +235,9 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
 
       // If bbox is extremely large (> 200 degrees longitude OR > 60 degrees latitude),
       // use a minimal query with only country boundaries to avoid timeouts
-      // Use backend boundaries for zoom < 6 to avoid Overpass timeouts
-      // At zoom 6+, we use Overpass for better detail (even though it's slower)
-      // Use actualZoom (not approximateZoom) to match what user sees
-      if (actualZoom < 6 || lonSpan > 200 || latSpan > 60) {
+      // Use backend boundaries for zoom < 9 to avoid Overpass timeouts
+      // At zoom 9+, we use Overpass for full detail
+      if (approximateZoom < 9 || lonSpan > 200 || latSpan > 60) {
         // For world/continent scale, use a static cache key since boundaries don't change
         // This prevents re-fetching the same 258 countries on every pan
         const cacheKey = 'world-country-boundaries';
@@ -978,18 +977,15 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             // This prevents rendering distant islands from countries like USA (Hawaii) or Mexico (Baja)
             const visibleRings: Array<number[][]> = [];
 
-            for (let ringIdx = 0; ringIdx < boundary.geometry.coordinates.length; ringIdx++) {
-              const ring = boundary.geometry.coordinates[ringIdx];
+            for (const ring of boundary.geometry.coordinates) {
               const actualRing = ring as number[][];
               if (!actualRing || actualRing.length === 0) continue;
 
               // Check if this specific ring has any points near the viewport
               let ringIsVisible = false;
-              let firstCoord: number[] | null = null;
               for (let i = 0; i < Math.min(10, actualRing.length); i++) {
                 const coord = actualRing[i];
                 if (coord && coord.length === 2) {
-                  if (!firstCoord) firstCoord = coord;
                   const lat = coord[1];
                   const lon = coord[0];
                   // Use zoom-dependent buffer to balance performance vs completeness
