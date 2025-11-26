@@ -961,8 +961,9 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
         // Calculate zoom-dependent buffer for viewport culling
         // At high zoom (12+): tight buffer (2 degrees) to avoid rendering distant islands
         // At medium zoom (9-11): medium buffer (5 degrees) for regional views
-        // At low zoom (< 9): large buffer (10 degrees) for continental/multi-country views
+        // At low zoom (< 9): disable culling - backend boundaries are already simplified
         const viewportBuffer = zoom >= 12 ? 2 : zoom >= 9 ? 5 : 10;
+        const useViewportCulling = zoom >= 9;  // Only cull at zoom 9+ (Overpass detailed data)
 
         // FIRST PASS: Fill COUNTRY boundaries only (not states)
         // State boundaries should only be stroked, not filled, to avoid unnatural geometric shapes
@@ -972,32 +973,36 @@ export function CanvasRenderer({ showLabels, filters: _filters, featureControls 
             .forEach((boundary: Boundary) => {
             if (!boundary.geometry || !boundary.geometry.coordinates) return;
 
-            // IMPROVED: Check each ring individually for visibility
-            // Only render rings that are actually in or near the viewport
-            // This prevents rendering distant islands from countries like USA (Hawaii) or Mexico (Baja)
+            // At zoom < 9: render ALL rings (backend data is pre-simplified, culling causes gaps)
+            // At zoom 9+: cull per-ring to avoid rendering distant islands (Overpass data is detailed)
             const visibleRings: Array<number[][]> = [];
 
             for (const ring of boundary.geometry.coordinates) {
               const actualRing = ring as number[][];
               if (!actualRing || actualRing.length === 0) continue;
 
-              // Check if this specific ring has any points near the viewport
-              let ringIsVisible = false;
-              for (let i = 0; i < Math.min(10, actualRing.length); i++) {
-                const coord = actualRing[i];
-                if (coord && coord.length === 2) {
-                  const lat = coord[1];
-                  const lon = coord[0];
-                  // Use zoom-dependent buffer to balance performance vs completeness
-                  if (lat >= viewportSouth - viewportBuffer && lat <= viewportNorth + viewportBuffer &&
-                      lon >= viewportWest - viewportBuffer && lon <= viewportEast + viewportBuffer) {
-                    ringIsVisible = true;
-                    break;
+              if (useViewportCulling) {
+                // Check if this specific ring has any points near the viewport
+                let ringIsVisible = false;
+                for (let i = 0; i < Math.min(10, actualRing.length); i++) {
+                  const coord = actualRing[i];
+                  if (coord && coord.length === 2) {
+                    const lat = coord[1];
+                    const lon = coord[0];
+                    // Use zoom-dependent buffer to balance performance vs completeness
+                    if (lat >= viewportSouth - viewportBuffer && lat <= viewportNorth + viewportBuffer &&
+                        lon >= viewportWest - viewportBuffer && lon <= viewportEast + viewportBuffer) {
+                      ringIsVisible = true;
+                      break;
+                    }
                   }
                 }
-              }
 
-              if (ringIsVisible) {
+                if (ringIsVisible) {
+                  visibleRings.push(actualRing);
+                }
+              } else {
+                // No culling at zoom < 9 - include all rings
                 visibleRings.push(actualRing);
               }
             }
